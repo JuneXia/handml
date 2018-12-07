@@ -1,5 +1,4 @@
-
-
+# He初始化，ELU激活函数
 # Batch Normalization, 批量标准化
 # 梯度裁剪
 from functools import partial
@@ -22,7 +21,7 @@ if __name__ == '__main__':
 
     X = tf.placeholder(tf.float32, shape=(None, n_inputs), name = 'X')
     y = tf.placeholder(tf.int64, shape=None, name = 'y')
-    training = tf.placeholder_with_default(False, shape=(), name = 'training')#给Batch norm加一个placeholder
+    training = tf.placeholder_with_default(False, shape=(), name = 'training')  # 给Batch norm加一个placeholder
 
     with tf.name_scope("dnn"):
         he_init = tf.contrib.layers.variance_scaling_initializer()
@@ -71,7 +70,7 @@ if __name__ == '__main__':
     threshold = 1.0
     optimizer = tf.train.GradientDescentOptimizer(learning_rate)
     grads_and_vars = optimizer.compute_gradients(loss)
-    capped_gvs = [(tf.clip_by_value(grad, -threshold, threshold), var) for grad, var in grads_and_vars]
+    capped_gvs = [(tf.clip_by_value(grad, -threshold, threshold), var) for grad, var in grads_and_vars]  # 将梯度裁剪到 -1.0 和 1.0 之间
     training_op = optimizer.apply_gradients(capped_gvs)
     '''
 
