@@ -44,6 +44,10 @@ with tf.name_scope("train"):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate)
     training_op = optimizer.minimize(loss)
 
+    冻结较低层
+    train_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="hidden[34]|outputs")  # regular expression
+    training_op = optimizer.minimize(loss, var_list=train_vars)
+
 # build new model with the same definition as before for hidden layers 1-3
 reuse_vars = tf.get_collection(tf.GraphKeys.GLOBAL_VARIABLES, scope="hidden[123]")  # regular expression
 reuse_vars_dict = dict([(var.op.name, var) for var in reuse_vars])
