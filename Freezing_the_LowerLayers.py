@@ -1,10 +1,14 @@
+import os
 import tensorflow as tf
 import numpy as np
+import numpy.random as rnd
 from tensorflow.examples.tutorials.mnist import input_data
 
-datapath = "/home/xiajun/res/MNIST_data"
+datapath = '/home/xiajun/res/MNIST_data'
 mnist = input_data.read_data_sets(datapath, validation_size=0, one_hot=True)
-pretrain_model = '/home/xiajun/dev/handml/mnist_models/mnist_dnn5_20181208182059/mnist_dnn5.ckpt'
+
+ROOT_DIR = os.path.abspath('./')
+pretrain_model = os.path.join(ROOT_DIR, 'mnist_models/mnist_dnn5_20181208182059/mnist_dnn5.ckpt')
 
 
 n_inputs = 28 * 28   # MNIST
@@ -14,7 +18,6 @@ n_hidden3 = 50   # reused
 n_hidden4 = 30   # new!
 # n_hidden5 = 20   # new!
 n_outputs = 10   # new!
-# 预训练模型中有5个隐藏层，我们这里只有4个隐藏层，其中前3层是复用预训练模型的.
 
 learning_rate = 0.01
 n_epoches = 20
@@ -42,9 +45,9 @@ with tf.name_scope("eval"):
 
 with tf.name_scope("train"):
     optimizer = tf.train.GradientDescentOptimizer(learning_rate)
-    training_op = optimizer.minimize(loss)
+    # training_op = optimizer.minimize(loss)
 
-    冻结较低层
+    # 冻结较低层
     train_vars = tf.get_collection(tf.GraphKeys.TRAINABLE_VARIABLES, scope="hidden[34]|outputs")  # regular expression
     training_op = optimizer.minimize(loss, var_list=train_vars)
 
@@ -60,12 +63,16 @@ with tf.Session() as sess:
     init.run()
     restore_saver.restore(sess, pretrain_model)
 
+    X_train = mnist.train.images
+    y_train = mnist.train.labels
+    hidden2_outputs = sess.run(hidden2, feed_dict={X: X_train})
     for epoch in range(n_epoches):
-        for iteration in range(mnist.train.num_examples // batch_size):
-            X_batch, y_batch = mnist.train.next_batch(batch_size)
+        shuffled_idx = rnd.permutation(len(hidden2_outputs))
+        hidden2_batches = np.array_split(hidden2_outputs[shuffled_idx], batch_size)
+        y_batches = np.array_split(y_train[shuffled_idx], batch_size)
+        for hidden2_batch, y_batch in zip(hidden2_batches, y_batches):
             y_batch = np.argmax(y_batch, 1)
-
-            sess.run(training_op, feed_dict={X: X_batch, y: y_batch})
+            sess.run(training_op, feed_dict={hidden2: hidden2_batch, y: y_batch})
 
         y_batch = np.argmax(mnist.test.labels, 1)
         accuracy_val = accuracy.eval(feed_dict={X: mnist.test.images, y: y_batch})

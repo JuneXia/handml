@@ -1,10 +1,13 @@
+import os
 import tensorflow as tf
 import numpy as np
 from tensorflow.examples.tutorials.mnist import input_data
 
 datapath = "/home/xiajun/res/MNIST_data"
 mnist = input_data.read_data_sets(datapath, validation_size=0, one_hot=True)
-pretrain_model = '/home/xiajun/dev/handml/mnist_models/mnist_dnn5_20181208182059/mnist_dnn5.ckpt'
+
+ROOT_DIR = os.path.abspath('./')
+pretrain_model = os.path.join(ROOT_DIR, 'mnist_models/mnist_dnn5_20181208182059/mnist_dnn5.ckpt')
 
 
 n_inputs = 28 * 28   # MNIST
