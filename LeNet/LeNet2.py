@@ -114,14 +114,14 @@ with tf.Session() as sess:
     sess.run(init)
 
     total_batch = mnist_data_set.train.num_examples//batch_size
-    for i in range(5):
-        for iteration in range(10):
+    for i in range(2000):
+        for iteration in range(total_batch):
             batch_xs, batch_ys = mnist_data_set.train.next_batch(batch_size)
             sess.run(train_step, feed_dict={X: batch_xs, y: batch_ys})
 
         batch_xs, batch_ys = mnist_data_set.train.images, mnist_data_set.train.labels
         loss_val = sess.run(cross_entropy, feed_dict={X: batch_xs, y: batch_ys})
-        batch_xs, batch_ys = mnist_data_set.test.images[0:100, :], mnist_data_set.test.labels[0:100, :]
+        batch_xs, batch_ys = mnist_data_set.test.images, mnist_data_set.test.labels
         # test_accuracy = accuracy.eval(feed_dict={X: batch_xs, y: batch_ys})
         test_accuracy = sess.run(accuracy, feed_dict={X: batch_xs, y: batch_ys})
         loss_buf.append(loss_val)
