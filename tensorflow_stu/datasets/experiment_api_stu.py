@@ -4,6 +4,9 @@ from tensorflow import keras
 from tensorflow.keras.utils import to_categorical
 import os
 
+# tf.enable_eager_execution()
+
+# tf.executing_eagerly()
 
 DEBUG = True
 
@@ -267,14 +270,15 @@ def demo9():
     # Use a custom OpenCV function to read the image, instead of the standard
     # TensorFlow `tf.read_file()` operation.
     def _read_py_function(filename, label):
-        print(filename, label)
-        image_decoded = cv2.imread(filename.decode(), cv2.IMREAD_GRAYSCALE)
+        # image_decoded = cv2.imread(filename.decode(), cv2.IMREAD_GRAYSCALE)
+        image_decoded = cv2.imread(filename.numpy().decode(), cv2.IMREAD_GRAYSCALE)
+        image_decoded = image_decoded.reshape((28, 28, 1))
         return image_decoded, label
 
     # Use standard TensorFlow operations to resize the image to a fixed shape.
     def _resize_function(image_decoded, label):
         image_decoded.set_shape([None, None, None])
-        image_resized = tf.image.resize_images(image_decoded, [28, 28])
+        image_resized = tf.image.resize_images(image_decoded, [32, 32])
         return image_resized, label
 
     data_path = '/home/xiaj/res/mnist'
@@ -303,8 +307,6 @@ def demo9():
                 # 迭代完后，如果还想要继续从头迭代，可以再次sess.run(iterator.initializer)即可。
                 print(e)
 
-
-demo9 没有调通
 
 if __name__ == '__main__':
     demo9()
