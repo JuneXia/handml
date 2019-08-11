@@ -6,8 +6,8 @@ from tensorflow.keras.utils import to_categorical
 
 
 # Change Mark: 相对于lenet2.py，本次实验必须使用eager模式，否则会报错
-tf.enable_eager_execution()
-print('is eager executing: ', tf.executing_eagerly())
+# tf.enable_eager_execution()
+# print('[network.lenet3]:: is eager executing: ', tf.executing_eagerly())
 
 
 class LeNet(keras.Model):
