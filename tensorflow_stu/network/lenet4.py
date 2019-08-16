@@ -25,6 +25,7 @@ class LeNet(tf.keras.Model):
         self.flat_fn = layers.Flatten(name='flatten')
         self.dense1_fn = layers.Dense(units=84, activation='relu', name='fc2')
 
+    # python3应该是__call__吧
     def call(self, inputs):
         x = self.conv1_fn(inputs)
         x = self.pool1_fn(x)
