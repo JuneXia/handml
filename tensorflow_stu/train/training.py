@@ -6,7 +6,7 @@ from utils import util
 network_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
 sys.path.append(network_path)
 from network import lenet3 as net
-from network import siamese as Model
+# from network import siamese as Model
 from datasets import dataset
 
 import numpy as np
@@ -25,6 +25,8 @@ from tensorflow.examples.tutorials import mnist
 # Change Mark: 相对于lenet2.py，本次实验必须使用eager模式，否则会报错
 tf.enable_eager_execution()
 print('is eager executing: ', tf.executing_eagerly())
+
+g_datapath = '/home/xiaj/res/mnist'
 
 
 if __name__ == '__main__1':
@@ -553,11 +555,19 @@ class DataGenerator(keras.utils.Sequence):
             np.random.shuffle(self.indexes)
 
     def data_generation(self, batch_data, batch_label):
-        X = np.empty((self.batch_size, *self.shape))
+        X = np.empty((self.batch_size, *self.shape), dtype=np.float32)
         y = np.empty((self.batch_size), dtype=int)
 
+        channel = self.shape[-1]
         for i, (data, label) in enumerate(zip(batch_data, batch_label)):
-            X[i, ] = cv2.imread(data)
+            image = []
+            if channel == 1:
+                image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
+                image = np.expand_dims(image, axis=2)
+            elif channel == 3:
+                image = cv2.imread(data)
+
+            X[i, ] = image# .astype(np.float32)
             y[i] = self.labels[label]
 
         return X, keras.utils.to_categorical(y, num_classes=self.num_class)
@@ -592,32 +602,76 @@ if __name__ == '__main__6':
     # >>> 完了再试试将lenet3作为网络其中一部分，siamese部分重新定义
 
 
-
 if __name__ == '__main__':
-    data_path = '/home/xiajun/res/MNIST_data/train'
-    images_path, images_label = util.get_dataset(data_path)
+    ""
+    # 使用自定义的数据迭代器 不能成功
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    images_path, images_label = util.get_dataset(g_datapath)
     num_class = len(set(images_label))
     batch_size = 110
 
     # dataset = SiameseDataset(images_path, images_label)
     # dataset = Dataset(images_path, images_label, batch_size=batch_size)
-    dataset = DataGenerator(images_path, images_label, shape=(28, 28, 3), batch_size=32)
+    dataset = DataGenerator(images_path, images_label, shape=(28, 28, 1), batch_size=32)
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    ""
 
-    model = tf.keras.Sequential()
-    model.add(net.LeNet())
-    model.add(Model.SiameseNet())
-    model = Model.SiameseNet(embedding_net)
-    model = Model.ContrastiveLoss(1.0)
+
+    # OK
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    images_path, images_label = util.get_dataset(g_datapath)
+    num_class = len(set(images_label))
+    batch_size = 100
+    # dataset = sequence_dataset(images_path, images_label, num_class, batch_size=batch_size)
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
 
     model = tf.keras.Sequential([
-        model
+        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
+        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
+        tf.keras.layers.GlobalMaxPool2D(),
+        tf.keras.layers.Dense(2)
     ])
 
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    # images, labels = next(iter(dataset))  # dataset是我自己定义的迭代其类
+    # images = tf.convert_to_tensor(images, dtype=tf.float32)
+    # predicted = model(images)  # images.
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+    # optimizer = tf.keras.optimizers.Adam()
+    optimizer = tf.train.AdamOptimizer()
+    # loss_func = tf.keras.losses.sparse_categorical_crossentropy()
+    loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+
+
+    def loss(model, x, y):
+        y_ = model(x)
+        return loss_func(y, y_)
+
+    def train_step(model, images, labels):
+        with tf.GradientTape() as t:
+            loss_step = loss(model, images, labels)
+        grads = t.gradient(loss_step, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+        # optimizer.get_gradients(loss, model.trainable_variables)
+
+    def train():
+        for epoch in range(10):
+            for batch, (images, labels) in enumerate(dataset):
+                train_step(model, images, labels)
+                print(batch)
+
+    train()
+
+    '''
     model.compile(optimizer=tf.train.RMSPropOptimizer(0.001),
                   loss='categorical_crossentropy',
                   metrics=['accuracy'])
 
     model.fit_generator(dataset, epochs=5, steps_per_epoch=len(images_path) // batch_size + 1)
+    '''
 
     print('debug')
 
