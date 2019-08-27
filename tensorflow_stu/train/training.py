@@ -1,6 +1,6 @@
 import os
 import sys
-os.environ['CUDA_VISIBLE_DEVICES']='0'
+os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 
 home_path = os.environ['HOME']
 
@@ -33,7 +33,7 @@ tf.enable_eager_execution()
 print('is eager executing: ', tf.executing_eagerly())
 
 # g_datapath = '/home/xiaj/res/mnist'
-g_datapath = os.path.join(home_path, 'res/mnist/train')
+g_datapath = os.path.join(home_path, 'res/mnist')
 
 
 if __name__ == '__main__1':
@@ -615,20 +615,20 @@ if __name__ == '__main__':
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     images_path, images_label = util.get_dataset(g_datapath)
     num_class = len(set(images_label))
-    batch_size = 110
+    batch_size = 100
 
     # dataset = SiameseDataset(images_path, images_label)
     # dataset = Dataset(images_path, images_label, batch_size=batch_size)
-    dataset = DataGenerator(images_path, images_label, shape=(28, 28, 1), batch_size=32)
+    dataset = DataGenerator(images_path, images_label, shape=(28, 28, 1), batch_size=batch_size, one_hot=True)
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ""
 
 
     # OK
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    images_path, images_label = util.get_dataset(g_datapath)
-    num_class = len(set(images_label))
-    batch_size = 100
+    # images_path, images_label = util.get_dataset(g_datapath)
+    # num_class = len(set(images_label))
+    # batch_size = 100
     # dataset = sequence_dataset(images_path, images_label, num_class, batch_size=batch_size)
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -649,12 +649,10 @@ if __name__ == '__main__':
 
     # optimizer = tf.keras.optimizers.Adam()
     optimizer = tf.train.AdamOptimizer()
-    # loss_func = tf.keras.losses.sparse_categorical_crossentropy()
-    # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-    # tf.keras.losses.categorical_crossentropy()
 
-    # train_loss = tf.metrics.mean()
-
+    loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    metric_train_loss = tf.keras.metrics.Mean('train_loss')
+    metric_train_acc = tf.keras.metrics.CategoricalAccuracy('train_acc')
 
     def loss(model, x, y):
         y_ = model(x)
@@ -666,23 +664,33 @@ if __name__ == '__main__':
 
     def train_step(model, images, labels):
         with tf.GradientTape() as t:
-            # loss_step = loss(model, images, labels)
             pred = model(images)
             loss_step = tf.keras.losses.categorical_crossentropy(labels, pred)
         grads = t.gradient(loss_step, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
-        # optimizer.get_gradients(loss, model.trainable_variables)
-        # train_loss = tf.metrics.mean(loss_step)
         train_loss = loss_step.numpy().mean()
+
         train_acc = tf.keras.metrics.categorical_accuracy(labels, pred)
         train_acc = train_acc.numpy().mean()
         print(train_loss, train_acc)
 
+
+    def train_step_custom(model, images, labels):
+        with tf.GradientTape() as t:
+            pred = model(images)
+            loss_step = loss_func(labels, pred)
+        grads = t.gradient(loss_step, model.trainable_variables)
+        optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+        metric_train_loss(loss_step)
+        metric_train_acc(labels, pred)
+
+        print('train loss={}, train_acc={}'.format(metric_train_loss.result(), metric_train_acc.result()))
+
     def train():
         for epoch in range(10):
             for batch, (images, labels) in enumerate(dataset):
-                train_step(model, images, labels)
-                # print(batch)
+                train_step_custom(model, images, labels)
 
     train()
 
@@ -696,11 +704,3 @@ if __name__ == '__main__':
 
     print('debug')
 
-
-
-# print
-
-
-
-# pycharm 版本问题，总结
-# nvidia,cuda等驱动安装问题总结

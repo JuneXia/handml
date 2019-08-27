@@ -26,8 +26,6 @@ data
         images = images[0:2]
     for i, image in enumerate(images):
         imgs = os.listdir(os.path.join(data_path, image))
-        if DEBUG:
-            imgs = imgs[0:1000]
         images_path.extend([os.path.join(data_path, image, img) for img in imgs])
         images_label.extend([i] * len(imgs))
 
