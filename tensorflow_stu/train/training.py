@@ -1,13 +1,19 @@
 import os
 import sys
+os.environ['CUDA_VISIBLE_DEVICES']='0'
+
+home_path = os.environ['HOME']
 
 from utils import util
 
 network_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
+print('network path: ', network_path)
 sys.path.append(network_path)
+sys.path.append(network_path + '/datasets')
 from network import lenet3 as net
 # from network import siamese as Model
-from datasets import dataset
+# from ..datasets import dataset
+import dataset
 
 import numpy as np
 import tensorflow as tf
@@ -26,7 +32,8 @@ from tensorflow.examples.tutorials import mnist
 tf.enable_eager_execution()
 print('is eager executing: ', tf.executing_eagerly())
 
-g_datapath = '/home/xiaj/res/mnist'
+# g_datapath = '/home/xiaj/res/mnist'
+g_datapath = os.path.join(home_path, 'res/mnist/train')
 
 
 if __name__ == '__main__1':
@@ -540,7 +547,6 @@ class DataGenerator(keras.utils.Sequence):
         return int(np.floor(len(self.datas) / self.batch_size))
 
     def __getitem__(self, index):
-        print(index)
         indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
         batch_data = self.datas[indexes]
         batch_label = self.labels[indexes]
@@ -564,11 +570,12 @@ class DataGenerator(keras.utils.Sequence):
             if channel == 1:
                 image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
                 image = np.expand_dims(image, axis=2)
+                image = image/255
             elif channel == 3:
                 image = cv2.imread(data)
 
-            X[i, ] = image# .astype(np.float32)
-            y[i] = self.labels[label]
+            X[i, ] = image  # .astype(np.float32)
+            y[i] = label
 
         return X, keras.utils.to_categorical(y, num_classes=self.num_class)
 
@@ -643,25 +650,39 @@ if __name__ == '__main__':
     # optimizer = tf.keras.optimizers.Adam()
     optimizer = tf.train.AdamOptimizer()
     # loss_func = tf.keras.losses.sparse_categorical_crossentropy()
-    loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
+    # tf.keras.losses.categorical_crossentropy()
+
+    # train_loss = tf.metrics.mean()
 
 
     def loss(model, x, y):
         y_ = model(x)
-        return loss_func(y, y_)
+        # return loss_func(y, y_)
+        loss_val = tf.keras.losses.categorical_crossentropy(y, y_)
+        train_acc = tf.keras.metrics.categorical_accuracy(y, y_)
+        print(train_acc)
+        return loss_val
 
     def train_step(model, images, labels):
         with tf.GradientTape() as t:
-            loss_step = loss(model, images, labels)
+            # loss_step = loss(model, images, labels)
+            pred = model(images)
+            loss_step = tf.keras.losses.categorical_crossentropy(labels, pred)
         grads = t.gradient(loss_step, model.trainable_variables)
         optimizer.apply_gradients(zip(grads, model.trainable_variables))
         # optimizer.get_gradients(loss, model.trainable_variables)
+        # train_loss = tf.metrics.mean(loss_step)
+        train_loss = loss_step.numpy().mean()
+        train_acc = tf.keras.metrics.categorical_accuracy(labels, pred)
+        train_acc = train_acc.numpy().mean()
+        print(train_loss, train_acc)
 
     def train():
         for epoch in range(10):
             for batch, (images, labels) in enumerate(dataset):
                 train_step(model, images, labels)
-                print(batch)
+                # print(batch)
 
     train()
 
@@ -676,3 +697,10 @@ if __name__ == '__main__':
     print('debug')
 
 
+
+# print
+
+
+
+# pycharm 版本问题，总结
+# nvidia,cuda等驱动安装问题总结
