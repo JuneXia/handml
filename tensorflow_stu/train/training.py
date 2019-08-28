@@ -307,11 +307,12 @@ class Dataset(object):
     普通数据集
     """
 
-    def __init__(self, datas, labels, batch_size=1, is_train=True, one_hot=True):
+    def __init__(self, datas, labels, shape=(), batch_size=1, is_train=True, one_hot=True):
         super(Dataset, self).__init__()
         self.count = 0
         self.datas = datas
         self.labels = labels
+        self.shape = shape
         self.batch_size = batch_size
         self.num_class = len(set(labels))
         self.one_hot = one_hot
@@ -395,11 +396,19 @@ class Dataset(object):
         start_index = min(len(self.datas), self.count)
         end_index = min(len(self.datas), self.count + self.batch_size)
 
+        channel = self.shape[-1]
         for i, index in enumerate(range(start_index, end_index)):
             data = self.datas[index]
             label = self.labels[index]
-            image = cv2.imread(data).astype(np.float32)
-            image /= 127.5
+            image = []
+            if channel == 1:
+                image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
+                image = np.expand_dims(image, axis=2)
+            elif channel == 3:
+                image = cv2.imread(data)
+            image = image.astype(np.float32)
+            image = image / 255.0
+            # image /= 127.5
             datas.append(image)
             labels.append(label)
             self.count += 1
@@ -570,15 +579,13 @@ class DataGenerator(keras.utils.Sequence):
             if channel == 1:
                 image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
                 image = np.expand_dims(image, axis=2)
-                image = image/255
             elif channel == 3:
                 image = cv2.imread(data)
-
+            image = image / 255
             X[i, ] = image  # .astype(np.float32)
             y[i] = label
 
         return X, keras.utils.to_categorical(y, num_classes=self.num_class)
-
 
 
 if __name__ == '__main__6':
@@ -618,10 +625,12 @@ if __name__ == '__main__':
     batch_size = 100
 
     # dataset = SiameseDataset(images_path, images_label)
-    # dataset = Dataset(images_path, images_label, batch_size=batch_size)
+    # dataset = Dataset(images_path, images_label, shape=(28, 28, 1), batch_size=batch_size)
     dataset = DataGenerator(images_path, images_label, shape=(28, 28, 1), batch_size=batch_size, one_hot=True)
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     ""
+
+
 
 
     # OK
@@ -637,7 +646,7 @@ if __name__ == '__main__':
         tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
         tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
         tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(2)
+        tf.keras.layers.Dense(10)
     ])
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -653,6 +662,8 @@ if __name__ == '__main__':
     loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
     metric_train_loss = tf.keras.metrics.Mean('train_loss')
     metric_train_acc = tf.keras.metrics.CategoricalAccuracy('train_acc')
+    metric_test_loss = tf.keras.metrics.Mean('test_loss')
+    metric_test_acc = tf.keras.metrics.CategoricalAccuracy('test_acc')
 
     def loss(model, x, y):
         y_ = model(x)
@@ -674,6 +685,13 @@ if __name__ == '__main__':
         train_acc = train_acc.numpy().mean()
         print(train_loss, train_acc)
 
+    def test_step_custom(model, images, labels):
+        pred = model(images)
+        loss_step = loss_func(labels, pred)
+        metric_test_loss(loss_step)
+        metric_test_acc(labels, pred)
+
+        print('test loss={}, test acc={}'.format(metric_test_loss.result(), metric_test_acc.result()))
 
     def train_step_custom(model, images, labels):
         with tf.GradientTape() as t:
@@ -685,7 +703,7 @@ if __name__ == '__main__':
         metric_train_loss(loss_step)
         metric_train_acc(labels, pred)
 
-        print('train loss={}, train_acc={}'.format(metric_train_loss.result(), metric_train_acc.result()))
+        print('train loss={}, train acc={}'.format(metric_train_loss.result(), metric_train_acc.result()))
 
     def train():
         for epoch in range(10):

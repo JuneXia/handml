@@ -2,7 +2,7 @@ import os
 import numpy as np
 
 
-DEBUG = True
+DEBUG = False
 
 def get_dataset(data_path, shuffle=True):
     '''
