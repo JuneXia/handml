@@ -177,3 +177,11 @@ if __name__ == '__main__':
 
     print('debug')
 
+
+
+"""
+reference:
+https://zhuanlan.zhihu.com/p/66648325
+https://tf.wiki/zh/basic/models.html
+https://www.zybuluo.com/Team/note/1491361
+"""
