@@ -1,9 +1,12 @@
 import os
 import math
 import random
+import cv2
 import numpy as np
 import tensorflow as tf
-import itertools
+from tensorflow import keras
+from tensorflow.keras.utils import to_categorical
+
 
 class ImageClass():
     "Stores the paths to images for a given class"
@@ -191,10 +194,6 @@ class FaceDataset:
         return len(self.train_data)
 
 
-import numpy as np
-from PIL import Image
-
-
 class DataIterator:
     def __init__(self, dataset, batch_size=1, shuffle=False):
         self.count = 0
@@ -205,13 +204,16 @@ class DataIterator:
         self.count = 0
         return self
 
-    def __next__(self):
+    def __next__ok(self):
         if self.count == len(self.dataset):
             raise StopIteration
 
         datas = []
         start_index = min(len(self.dataset), self.count)
         end_index = min(len(self.dataset), self.count + self.batch_size)
+
+        # datas = self.dataset[start_index:end_index]  # 如果是SiameseDataset则无法使用start:end这种索引方式，不过下面这个方式是通用的。
+
         for i, index in enumerate(range(start_index, end_index)):
             data = self.dataset[index]
             datas.append(data)
@@ -219,6 +221,346 @@ class DataIterator:
         datas = np.array(datas)
 
         return datas
+
+    def __next__(self):
+        if self.count == len(self.dataset):
+            raise StopIteration
+
+        images = []
+        labels = []
+        start_index = min(len(self.dataset), self.count)
+        end_index = min(len(self.dataset), self.count + self.batch_size)
+
+        # datas = self.dataset[start_index:end_index]  # 如果是SiameseDataset则无法使用start:end这种索引方式，不过下面这个方式是通用的。
+
+        for i, index in enumerate(range(start_index, end_index)):
+            data = self.dataset[index]
+            (img1, img2), label = data
+
+            image_pair = []
+            channel = 1
+            for img in [img1, img2]:
+                if channel == 1:
+                    image = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
+                    image = np.expand_dims(image, axis=2)
+                elif channel == 3:
+                    image = cv2.imread(data)
+                else:
+                    raise Exception("just support 1 and 3 channel!")
+                image = image.astype(np.float32)
+                image = image / 255.0
+                image_pair.append(image)
+
+            labels.append(label)
+            images.append(image_pair)
+            self.count += 1
+        images = np.array(images)
+        images1 = images[:, 0]
+        images2 = images[:, 1]
+        labels = np.array(labels)
+
+        return (images1, images2), labels
+
+
+class Dataset(object):
+    """
+    普通数据集，具有迭代功能，能够顺序产生数据
+    """
+
+    def __init__(self, datas, labels, shape=(), batch_size=1, is_train=True, one_hot=True):
+        super(Dataset, self).__init__()
+        self.count = 0
+        self.datas = datas
+        self.labels = labels
+        self.shape = shape
+        self.batch_size = batch_size
+        self.num_class = len(set(labels))
+        self.one_hot = one_hot
+
+        self.train = is_train
+        # self.transform = self.mnist_dataset.transform
+
+        """
+        if self.train:
+            self.labels_set = set(self.labels)
+            self.label_to_indices = {label: np.where(self.labels == label)[0]
+                                     for label in self.labels_set}
+        else:
+            # generate fixed pairs for testing
+            self.test_labels = self.mnist_dataset.test_labels
+            self.test_data = self.mnist_dataset.test_data
+            self.labels_set = set(self.test_labels.numpy())
+            self.label_to_indices = {label: np.where(self.test_labels.numpy() == label)[0]
+                                     for label in self.labels_set}
+
+            random_state = np.random.RandomState(29)
+
+            positive_pairs = [[i,
+                               random_state.choice(self.label_to_indices[self.test_labels[i].item()]),
+                               1]
+                              for i in range(0, len(self.test_data), 2)]
+
+            negative_pairs = [[i,
+                               random_state.choice(self.label_to_indices[
+                                                       np.random.choice(
+                                                           list(self.labels_set - set([self.test_labels[i].item()]))
+                                                       )
+                                                   ]),
+                               0]
+                              for i in range(1, len(self.test_data), 2)]
+            self.test_pairs = positive_pairs + negative_pairs
+        """
+
+    """
+    def __getitem__(self, index):
+        if self.train:
+            target = np.random.randint(0, 2)
+            img1, label1 = self.datas[index], self.labels[index].item()
+            if target == 1:
+                siamese_index = index
+                while siamese_index == index:
+                    siamese_index = np.random.choice(self.label_to_indices[label1])
+            else:
+                siamese_label = np.random.choice(list(self.labels_set - set([label1])))
+                siamese_index = np.random.choice(self.label_to_indices[siamese_label])
+            img2 = self.datas[siamese_index]
+        else:
+            img1 = self.test_data[self.test_pairs[index][0]]
+            img2 = self.test_data[self.test_pairs[index][1]]
+            target = self.test_pairs[index][2]
+
+        '''
+        img1 = Image.fromarray(img1.numpy(), mode='L')
+        img2 = Image.fromarray(img2.numpy(), mode='L')
+        if self.transform is not None:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+        '''
+        return img1, img2, target
+    """
+
+    def __iter__(self):
+        """这个函数并不会被调用
+        :return:
+        """
+        self.count = 0
+        return self
+
+    def __next__(self):
+        if self.count == len(self.datas):
+            self.count = 0
+            # raise StopIteration
+
+        datas = []
+        labels = []
+        start_index = min(len(self.datas), self.count)
+        end_index = min(len(self.datas), self.count + self.batch_size)
+
+        channel = self.shape[-1]
+        for i, index in enumerate(range(start_index, end_index)):
+            data = self.datas[index]
+            label = self.labels[index]
+            image = []
+            if channel == 1:
+                image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
+                image = np.expand_dims(image, axis=2)
+            elif channel == 3:
+                image = cv2.imread(data)
+            image = image.astype(np.float32)
+            image = image / 255.0
+            # image /= 127.5
+            datas.append(image)
+            labels.append(label)
+            self.count += 1
+        datas = np.array(datas)
+        if self.one_hot:
+            labels = to_categorical(labels, self.num_class)
+        else:
+            labels = np.array(labels)
+
+        return datas, labels
+
+    def __len__(self):
+        """这个函数并不会被调用
+        :return:
+        """
+        return len(self.datas)
+
+
+# TODO: 试试继承tf.data.Dataset能不能实现迭代。
+class TFSiameseDataset(tf.data.Dataset):
+    def __init__(self):
+        super(TFSiameseDataset, self).__init__()
+
+
+class SiameseDataset(object):
+    """
+    Train: For each sample creates randomly a positive or a negative pair
+    Test: Creates fixed pairs for testing
+    """
+
+    def __init__(self, datas, labels, is_train=True):
+        super(SiameseDataset, self).__init__()
+        self.datas = datas
+        self.labels = labels
+
+        self.train = is_train
+        # self.transform = self.mnist_dataset.transform
+
+        if self.train:
+            self.labels_set = set(self.labels)
+            self.label_to_indices = {label: np.where(self.labels == label)[0]
+                                     for label in self.labels_set}
+        else:
+            # generate fixed pairs for testing
+            self.test_labels = self.mnist_dataset.test_labels
+            self.test_data = self.mnist_dataset.test_data
+            self.labels_set = set(self.test_labels.numpy())
+            self.label_to_indices = {label: np.where(self.test_labels.numpy() == label)[0]
+                                     for label in self.labels_set}
+
+            random_state = np.random.RandomState(29)
+
+            positive_pairs = [[i,
+                               random_state.choice(self.label_to_indices[self.test_labels[i].item()]),
+                               1]
+                              for i in range(0, len(self.test_data), 2)]
+
+            negative_pairs = [[i,
+                               random_state.choice(self.label_to_indices[
+                                                       np.random.choice(
+                                                           list(self.labels_set - set([self.test_labels[i].item()]))
+                                                       )
+                                                   ]),
+                               0]
+                              for i in range(1, len(self.test_data), 2)]
+            self.test_pairs = positive_pairs + negative_pairs
+
+    def __getitem__(self, index):
+        if self.train:
+            target = np.random.randint(0, 2)
+            img1, label1 = self.datas[index], self.labels[index].item()
+            if target == 1:
+                siamese_index = index
+                while siamese_index == index:
+                    siamese_index = np.random.choice(self.label_to_indices[label1])
+            else:
+                siamese_label = np.random.choice(list(self.labels_set - set([label1])))
+                siamese_index = np.random.choice(self.label_to_indices[siamese_label])
+            img2 = self.datas[siamese_index]
+        else:
+            img1 = self.test_data[self.test_pairs[index][0]]
+            img2 = self.test_data[self.test_pairs[index][1]]
+            target = self.test_pairs[index][2]
+
+        """
+        img1 = Image.fromarray(img1.numpy(), mode='L')
+        img2 = Image.fromarray(img2.numpy(), mode='L')
+        if self.transform is not None:
+            img1 = self.transform(img1)
+            img2 = self.transform(img2)
+        """
+        return (img1, img2), target
+
+    def __len__(self):
+        return len(self.datas)
+
+
+class DataGenerator(keras.utils.Sequence):
+    'Generates data for Keras'
+    def __init__(self, datas, labels, shape=(), batch_size=1, one_hot=True, shuffle=True):
+        super(DataGenerator, self).__init__()
+        self.count = 0
+        self.datas = datas
+        self.labels = labels
+        self.shape = shape
+        self.batch_size = batch_size
+        self.num_class = len(set(labels))
+        self.shuffle = shuffle
+        self.one_hot = one_hot
+
+        self.on_epoch_end()
+
+    def __len__(self):
+        'Denotes the number of batches per epoch'
+        return int(np.floor(len(self.datas) / self.batch_size))
+
+    def __getitem__(self, index):
+        indexes = self.indexes[index*self.batch_size:(index+1)*self.batch_size]
+        batch_data = self.datas[indexes]
+        batch_label = self.labels[indexes]
+
+        X, y = self.data_generation(batch_data, batch_label)
+
+        return X, y
+
+    def on_epoch_end(self):
+        self.indexes = np.arange(len(self.datas))
+        if self.shuffle == True:
+            np.random.shuffle(self.indexes)
+
+    def data_generation(self, batch_data, batch_label):
+        X = np.empty((self.batch_size, *self.shape), dtype=np.float32)
+        y = np.empty((self.batch_size), dtype=int)
+
+        channel = self.shape[-1]
+        for i, (data, label) in enumerate(zip(batch_data, batch_label)):
+            image = []
+            if channel == 1:
+                image = cv2.imread(data, cv2.IMREAD_GRAYSCALE)
+                image = np.expand_dims(image, axis=2)
+            elif channel == 3:
+                image = cv2.imread(data)
+            image = image / 255
+            X[i, ] = image  # .astype(np.float32)
+            y[i] = label
+
+        return X, keras.utils.to_categorical(y, num_classes=self.num_class)
+
+
+# 直接调用DataIterator的话，跟for循环迭代列表没什么两样
+# 本示例只是验证一下DataIterator代码是否能用。
+if __name__ == '__main__':
+    from utils import util
+    data_path = '/path/to/mnist'
+    images_path, images_label = util.get_dataset(data_path)
+    num_class = len(set(images_label))
+    batch_size = 100
+    dataiter = DataIterator(images_path, batch_size=10)
+
+    for data in dataiter:
+        print(data)
+
+    for data in dataiter:
+        print(data)
+
+
+# 使用自定义的Dataset数据集
+if __name__ == '__main__':
+    images_path, images_label = util.get_dataset(data_path)
+    num_class = len(set(images_label))
+    batch_size = 100
+
+    dataset = Dataset(images_path, images_label, shape=(28, 28, 1), batch_size=batch_size)
+
+    for data in dataset:
+        print(data)
+
+
+if __name__ == '__main__':
+    '''
+    SiameseDataset产生的是siamese图片路径和标签，而DataIterator是迭代加载SiameseDataset的图片和标签。
+    使用自定义的SiameseDataset和DataIterator配合产生siamese数据
+    '''
+    images_path, images_label = util.get_dataset(data_path)
+    num_class = len(set(images_label))
+    batch_size = 100
+
+    dataset = SiameseDataset(images_path, images_label)
+    dataset = DataIterator(dataset, batch_size=10)
+
+    for images1, images2, label in dataset:
+        print(images1.shape, images2.shape, label.shape)
 
 
 if __name__ == '__main__':
