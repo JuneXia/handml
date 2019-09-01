@@ -29,13 +29,27 @@ else:
 tf.enable_eager_execution()
 print('is eager executing: ', tf.executing_eagerly())
 
+import numpy.random as rng
+
+def W_init(shape,name=None):
+    """Initialize weights as in paper"""
+    values = rng.normal(loc=0,scale=1e-2,size=shape)
+    # return K.variable(values,name=name)
+    return tf.Variable(values,name=name)
+#//TODO: figure out how to initialize layer biases in keras.
+def b_init(shape,name=None):
+    """Initialize bias as in paper"""
+    values=rng.normal(loc=0.5,scale=1e-2,size=shape)
+    # return K.variable(values,name=name)
+    return tf.Variable(values,name=name)
+
 
 class ContrastiveLoss(tf.keras.layers.Layer):
     def __init__(self):
         super(ContrastiveLoss, self).__init__()
 
     def __call__(self, *args, **kwargs):
-        (pred1, pred2), labels = args
+        labels, (pred1, pred2) = args
 
         eps = 1e-9
         margin = 1.
@@ -55,22 +69,77 @@ class ContrastiveLoss(tf.keras.layers.Layer):
         return loss_step
 
 
+class ComplexLoss(tf.keras.layers.Layer):
+    def __init__(self):
+        super(ComplexLoss, self).__init__()
+        self.bincross_loss_func = tf.keras.losses.BinaryCrossentropy()
+        self.contrast_loss_func = ContrastiveLoss()
+
+    def __call__(self, *args, **kwargs):
+        labels, outputs, (emb1, emb2) = args
+        bincross_loss = self.bincross_loss_func(labels, outputs)
+        contrast_loss = self.contrast_loss_func(labels, (emb1, emb2))
+
+        # ok
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        self.add_loss(bincross_loss, inputs=True)
+        self.add_loss(contrast_loss, inputs=True)
+        '''
+        Epoch 9 batch 620 train loss:0.25426143407821655, train acc:0.8569740653038025
+Epoch 9 batch 640 train loss:0.25419411063194275, train acc:0.856954038143158
+Epoch 9 batch 660 train loss:0.25412696599960327, train acc:0.8571060299873352
+Epoch 9 batch 680 train loss:0.2540600299835205, train acc:0.8571428656578064
+        '''
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+        #
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # loss = tf.reduce_mean((bincross_loss, contrast_loss))
+        # self.add_loss(loss, inputs=True)
+        '''
+        Epoch 9 batch 620 train loss:0.2688220739364624, train acc:0.8453602194786072
+Epoch 9 batch 640 train loss:0.2687385082244873, train acc:0.8454023003578186
+Epoch 9 batch 660 train loss:0.268655389547348, train acc:0.845386803150177
+Epoch 9 batch 680 train loss:0.2685726284980774, train acc:0.8453999757766724
+        '''
+
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+        return self.losses
+
+    def call_调用函数时需要传元祖(self, inputs, **kwargs):
+        labels, outputs, (emb1, emb2) = inputs
+        bincross_loss = self.bincross_loss_func(labels, outputs)
+        contrast_loss = self.contrast_loss_func(labels, (emb1, emb2))
+        self.add_loss(bincross_loss, inputs=True)
+        self.add_loss(contrast_loss, inputs=True)
+
+        # self.add_metric(bincross_loss)
+
+
 class SiameseNet(tf.keras.layers.Layer):
     def __init__(self, embedding_net):
         super(SiameseNet, self).__init__()
         self.embedding_net = embedding_net
+        self.l1_layer = tf.keras.layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))
         self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')
+        # self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid', bias_initializer=b_init)
         self.predicts = None
 
     def call(self, inputs, **kwargs):
         emb1 = self.embedding_net(inputs[0])
         emb2 = self.embedding_net(inputs[1])
+        self.emb1 = emb1
+        self.emb2 = emb2
 
-        l1_dist = tf.reduce_sum(tf.abs(emb1 - emb2), axis=1)
-        l1_dist = tf.expand_dims(l1_dist, axis=1)
-        self.predicts = self.fc1(l1_dist)
+        l1_dist = self.l1_layer([emb1, emb2])
 
-        return emb1, emb2
+        # l1_dist = tf.reduce_sum(tf.abs(emb1 - emb2), axis=1)
+        # l1_dist = tf.expand_dims(l1_dist, axis=1)
+
+        predicts = self.fc1(l1_dist)
+
+        return predicts
 
     def get_output(self):
         return self.predicts
@@ -100,7 +169,7 @@ class AccumulatedLossMetric(tf.keras.layers.Layer):
         self.metric_loss = tf.keras.metrics.Mean(name)
 
     def __call__(self, *args, **kwargs):
-        predicts, labels, loss_step = args
+        labels, predicts, loss_step = args
         return self.metric_loss(loss_step)
 
     def result(self):
@@ -138,8 +207,6 @@ class OneShotNet(tf.keras.layers.Layer):
         print('debug')
 
 
-
-
 class Train(object):
     def __init__(self, model, loss_func, dataset, optimizer, metrics=[]):
         super(Train, self).__init__()
@@ -151,20 +218,25 @@ class Train(object):
         self.metrics = metrics
 
     def start(self):
+        contrast_loss_alpha = 0.9
         for epoch in range(10):
             for batch, (images, labels) in enumerate(dataset):
                 with tf.GradientTape() as t:
                     outputs = self.model(images)
-                    loss_step = self.loss_func(outputs, labels)
+                    labels = labels.reshape((-1, 1))
+                    loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+                    # contrast_loss = contrast_loss_func(labels, (self.model.emb1, self.model.emb2))
+                    # loss_step = (1-contrast_loss_alpha)*loss_step + contrast_loss_alpha*contrast_loss
 
                 grads = t.gradient(loss_step, model.trainable_variables)
                 self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-                # for metric in self.metrics:
-                metrics[0](outputs, labels, loss_step)
-                metrics[1](self.model.get_output(), labels, loss_step)
+                if batch % 20 == 0:
+                    # for metric in self.metrics:
+                    metrics[0](labels, outputs, loss_step)
+                    metrics[1](labels, outputs)
 
-                print('train loss:{}, train acc:{}'.format(metrics[0].result(), metrics[1].result()))
+                    print('Epoch {} batch {} train loss:{}, train acc:{}'.format(epoch, batch, metrics[0].result(), metrics[1].result()))
 
 
 if __name__ == '__main__':
@@ -186,16 +258,21 @@ if __name__ == '__main__':
     # model = tf.keras.Sequential([model, OneShotNet(model)])
 
     # optimizer = tf.keras.optimizers.Adam()
-    optimizer = tf.train.AdamOptimizer()
+    optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
 
     # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-    loss_func = ContrastiveLoss()
+    # contrast_loss_func = ContrastiveLoss()
+    # loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
+    loss_func = ComplexLoss()
+
+    metric_train_acc = tf.keras.metrics.BinaryAccuracy('train_bin_acc')
 
     # metric_train_loss = tf.keras.metrics.Mean('train_loss')
     # metric_train_acc = tf.keras.metrics.CategoricalAccuracy('train_acc')
     # metric_test_loss = tf.keras.metrics.Mean('test_loss')
     # metric_test_acc = tf.keras.metrics.CategoricalAccuracy('test_acc')
-    metrics = [AccumulatedLossMetric('train_loss'), AccumulatedAccuaracyMetric('train_acc')]
+    # metrics = [AccumulatedLossMetric('train_loss'), AccumulatedAccuaracyMetric('train_acc')]
+    metrics = [AccumulatedLossMetric('train_loss'), metric_train_acc]
 
     trainer = Train(model, loss_func, dataset, optimizer, metrics=metrics)
     trainer.start()
@@ -207,6 +284,7 @@ if __name__ == '__main__':
 """
 reference:
 https://zhuanlan.zhihu.com/p/66648325
+两个embedding的合并参考了这篇文章：https://blog.csdn.net/huowa9077/article/details/81082795
 https://tf.wiki/zh/basic/models.html
 https://www.zybuluo.com/Team/note/1491361
 """
