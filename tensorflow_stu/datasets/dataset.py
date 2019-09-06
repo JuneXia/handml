@@ -1,3 +1,4 @@
+# -*- coding: UTF-8 -*-
 import os
 import math
 import random
@@ -500,7 +501,8 @@ class DataGenerator(keras.utils.Sequence):
             np.random.shuffle(self.indexes)
 
     def data_generation(self, batch_data, batch_label):
-        X = np.empty((self.batch_size, *self.shape), dtype=np.float32)
+        # X = np.empty((self.batch_size, *self.shape), dtype=np.float32)  # python2不支持
+        X = np.empty((self.batch_size, self.shape[0], self.shape[1], self.shape[2]), dtype=np.float32)
         y = np.empty((self.batch_size), dtype=int)
 
         channel = self.shape[-1]

@@ -1,3 +1,4 @@
+# -*- coding: UTF-8 -*-
 import os
 import sys
 project_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -6,6 +7,7 @@ sys.path.append(project_path)
 from datasets import dataset as datset
 import tensorflow as tf
 from utils import util
+import datetime
 
 import socket
 import getpass
@@ -17,7 +19,7 @@ home_path = os.environ['HOME']
 user_name = getpass.getuser()
 host_name = socket.gethostname()
 
-if user_name == 'xiajun':
+if user_name in ['xiajun', 'yp']:
     g_datapath = os.path.join(home_path, 'res/mnist/train')
 elif user_name == 'xiaj':
     g_datapath = os.path.join(home_path, 'res/mnist')
@@ -107,7 +109,7 @@ Epoch 9 batch 680 train loss:0.2685726284980774, train acc:0.8453999757766724
 
         return self.losses
 
-    def call_调用函数时需要传元祖(self, inputs, **kwargs):
+    def call_need_tuple_when_invoke_function(self, inputs, **kwargs):  # 调用函数时需要传元祖
         labels, outputs, (emb1, emb2) = inputs
         bincross_loss = self.bincross_loss_func(labels, outputs)
         contrast_loss = self.contrast_loss_func(labels, (emb1, emb2))
@@ -218,7 +220,6 @@ class Train(object):
         self.metrics = metrics
 
     def start(self):
-        contrast_loss_alpha = 0.9
         for epoch in range(10):
             for batch, (images, labels) in enumerate(dataset):
                 with tf.GradientTape() as t:
@@ -237,6 +238,19 @@ class Train(object):
                     metrics[1](labels, outputs)
 
                     print('Epoch {} batch {} train loss:{}, train acc:{}'.format(epoch, batch, metrics[0].result(), metrics[1].result()))
+
+                with train_writer.as_default():
+                    tf.summary.scalar('loss', metrics[0].result())
+
+
+def learning_rate_sche(epoch):
+    learning_rate = 0.2
+    if epoch > 5:
+        learning_rate = 0.02
+    elif epoch > 10:
+        learning_rate = 0.01
+
+    return learning_rate
 
 
 if __name__ == '__main__':
@@ -274,6 +288,20 @@ if __name__ == '__main__':
     # metrics = [AccumulatedLossMetric('train_loss'), AccumulatedAccuaracyMetric('train_acc')]
     metrics = [AccumulatedLossMetric('train_loss'), metric_train_acc]
 
+    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    train_log_dir = os.path.join(project_path, 'logs', current_time, 'train')
+    test_log_dir = os.path.join(project_path, 'logs', current_time, 'test')
+    # train_writer = tf.summary.FileWriter(train_log_dir)
+    train_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=10000)
+    test_writer = tf.contrib.summary.create_file_writer(test_log_dir)
+
+    # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
+    lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
+
+
+
+
+
     trainer = Train(model, loss_func, dataset, optimizer, metrics=metrics)
     trainer.start()
 
@@ -288,3 +316,5 @@ https://zhuanlan.zhihu.com/p/66648325
 https://tf.wiki/zh/basic/models.html
 https://www.zybuluo.com/Team/note/1491361
 """
+
+
