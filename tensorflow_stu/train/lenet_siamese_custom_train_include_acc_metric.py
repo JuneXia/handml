@@ -8,6 +8,7 @@ from datasets import dataset as datset
 import tensorflow as tf
 from utils import util
 import datetime
+from tensorflow.contrib.tensorboard.plugins import projector
 
 import socket
 import getpass
@@ -222,25 +223,35 @@ class Train(object):
     def start(self):
         for epoch in range(10):
             for batch, (images, labels) in enumerate(dataset):
-                with tf.GradientTape() as t:
-                    outputs = self.model(images)
-                    labels = labels.reshape((-1, 1))
-                    loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
-                    # contrast_loss = contrast_loss_func(labels, (self.model.emb1, self.model.emb2))
-                    # loss_step = (1-contrast_loss_alpha)*loss_step + contrast_loss_alpha*contrast_loss
+                global_step.assign_add(1)
+                with tf.contrib.summary.record_summaries_every_n_global_steps(100):
+                    # tf.contrib.summary.scalar('loss', loss)
+                    with tf.GradientTape() as t:
+                        outputs = self.model(images)
+                        labels = labels.reshape((-1, 1))
+                        loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+                        # contrast_loss = contrast_loss_func(labels, (self.model.emb1, self.model.emb2))
+                        # loss_step = (1-contrast_loss_alpha)*loss_step + contrast_loss_alpha*contrast_loss
 
-                grads = t.gradient(loss_step, model.trainable_variables)
-                self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
+                    grads = t.gradient(loss_step, model.trainable_variables)
+                    self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-                if batch % 20 == 0:
-                    # for metric in self.metrics:
-                    metrics[0](labels, outputs, loss_step)
-                    metrics[1](labels, outputs)
+                    tf.contrib.summary.scalar('loss', metrics[0](labels, outputs, loss_step))
 
-                    print('Epoch {} batch {} train loss:{}, train acc:{}'.format(epoch, batch, metrics[0].result(), metrics[1].result()))
+                    '''
+                    if batch % 20 == 0:
+                        # for metric in self.metrics:
+                        metrics[0](labels, outputs, loss_step)
+                        metrics[1](labels, outputs)
 
-                with train_writer.as_default():
-                    tf.summary.scalar('loss', metrics[0].result())
+                        print('Epoch {} batch {} train loss:{}, train acc:{}'.format(epoch, batch, metrics[0].result(),
+                                                                                     metrics[1].result()))
+                    
+                    # train_writer.add_summary(metrics[0].result(), i)
+                    with train_writer.as_default():
+                        tf.summary.scalar('loss', metrics[0].result())
+                    train_writer.flush()
+                    '''
 
 
 def learning_rate_sche(epoch):
@@ -251,6 +262,11 @@ def learning_rate_sche(epoch):
         learning_rate = 0.01
 
     return learning_rate
+
+
+class DummyFileWriter(object):
+  def get_logdir(self):
+    return './logs'
 
 
 if __name__ == '__main__':
@@ -266,6 +282,7 @@ if __name__ == '__main__':
         tf.keras.layers.GlobalMaxPool2D(),
         tf.keras.layers.Dense(10)
     ])
+    emb = model.output
     # model = ClassificationNet(model, num_class)
     model = SiameseNet(model)
     # model = OneShotNet(model)
@@ -294,6 +311,21 @@ if __name__ == '__main__':
     # train_writer = tf.summary.FileWriter(train_log_dir)
     train_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=10000)
     test_writer = tf.contrib.summary.create_file_writer(test_log_dir)
+
+    global_step = tf.train.get_or_create_global_step()
+    train_writer.set_as_default()
+
+    '''
+    # self._writer = tf.contrib.summary.create_file_writer('path')
+    embedding_config = projector.ProjectorConfig()
+    embedding = embedding_config.embeddings.add()
+    embedding.tensor_name = emb.name
+    embedding.metadata_path = 'metadata.tsv'
+    # projector.visualize_embeddings(train_writer, embedding_config)
+    projector.visualize_embeddings(DummyFileWriter(), embedding_config)
+    '''
+
+
 
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
