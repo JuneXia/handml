@@ -175,6 +175,9 @@ class AccumulatedLossMetric(tf.keras.layers.Layer):
         labels, predicts, loss_step = args
         return self.metric_loss(loss_step)
 
+    def name(self):
+        return self.metric_loss.name
+
     def result(self):
         return self.metric_loss.result()
 
@@ -190,6 +193,32 @@ class AccumulatedAccuaracyMetric(tf.keras.layers.Layer):
     def __call__(self, *args, **kwargs):
         predicts, labels, loss_step = args
         return self.metric_acc(predicts, labels)
+
+    def name(self):
+        return self.metric_acc.name
+
+    def result(self):
+        return self.metric_acc.result()
+
+    def reset_states(self):
+        self.metric_acc.reset_states()
+
+
+class AccumulatedBinaryAccuracyMetric(tf.keras.layers.Layer):
+    def __init1__(self, name='acc'):
+        super(AccumulatedBinaryAccuracyMetric, self).__init__()
+        self.metric_acc = tf.keras.metrics.BinaryAccuracy(name)
+
+    def __init__(self, metric_fuc):
+        super(AccumulatedBinaryAccuracyMetric, self).__init__()
+        self.metric_acc = metric_fuc
+
+    def __call__(self, *args, **kwargs):
+        predicts, labels, loss_step = args
+        return self.metric_acc(predicts, labels)
+
+    def name(self):
+        return self.metric_acc.name
 
     def result(self):
         return self.metric_acc.result()
@@ -220,38 +249,35 @@ class Train(object):
         self.optimizer = optimizer
         self.metrics = metrics
 
+        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+        train_log_dir = os.path.join(project_path, 'logs', current_time)
+        # summary_writer 一定要写成成员变量，因为这会常住内存，否则会报错。
+        self.summary_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=1000)
+        self.global_step = tf.train.get_or_create_global_step()
+        self.summary_writer.set_as_default()
+
     def start(self):
-        for epoch in range(10):
-            for batch, (images, labels) in enumerate(dataset):
-                global_step.assign_add(1)
-                with tf.contrib.summary.record_summaries_every_n_global_steps(100):
-                    # tf.contrib.summary.scalar('loss', loss)
+        epoch_size = 10
+        with tf.contrib.summary.record_summaries_every_n_global_steps(5, self.global_step):
+            for epoch in range(epoch_size):
+                for batch, (images, labels) in enumerate(dataset):
+                    self.global_step.assign_add(1)
                     with tf.GradientTape() as t:
                         outputs = self.model(images)
                         labels = labels.reshape((-1, 1))
                         loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
-                        # contrast_loss = contrast_loss_func(labels, (self.model.emb1, self.model.emb2))
-                        # loss_step = (1-contrast_loss_alpha)*loss_step + contrast_loss_alpha*contrast_loss
 
                     grads = t.gradient(loss_step, model.trainable_variables)
                     self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
-                    tf.contrib.summary.scalar('loss', metrics[0](labels, outputs, loss_step))
-
-                    '''
-                    if batch % 20 == 0:
-                        # for metric in self.metrics:
-                        metrics[0](labels, outputs, loss_step)
-                        metrics[1](labels, outputs)
-
-                        print('Epoch {} batch {} train loss:{}, train acc:{}'.format(epoch, batch, metrics[0].result(),
-                                                                                     metrics[1].result()))
-                    
-                    # train_writer.add_summary(metrics[0].result(), i)
-                    with train_writer.as_default():
-                        tf.summary.scalar('loss', metrics[0].result())
-                    train_writer.flush()
-                    '''
+                    print('global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
+                                                                                epoch_size,
+                                                                                batch), end=' ')
+                    for metric in metrics:
+                        rslt = metric(labels, outputs, loss_step)
+                        tf.contrib.summary.scalar(metric.name(), rslt)
+                        print(metric.name(), rslt.numpy(), end=' ')
+                    print('')
 
 
 def learning_rate_sche(epoch):
@@ -296,24 +322,8 @@ if __name__ == '__main__':
     # loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     loss_func = ComplexLoss()
 
-    metric_train_acc = tf.keras.metrics.BinaryAccuracy('train_bin_acc')
-
-    # metric_train_loss = tf.keras.metrics.Mean('train_loss')
-    # metric_train_acc = tf.keras.metrics.CategoricalAccuracy('train_acc')
-    # metric_test_loss = tf.keras.metrics.Mean('test_loss')
-    # metric_test_acc = tf.keras.metrics.CategoricalAccuracy('test_acc')
-    # metrics = [AccumulatedLossMetric('train_loss'), AccumulatedAccuaracyMetric('train_acc')]
+    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('train_bin_acc'))
     metrics = [AccumulatedLossMetric('train_loss'), metric_train_acc]
-
-    current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    train_log_dir = os.path.join(project_path, 'logs', current_time, 'train')
-    test_log_dir = os.path.join(project_path, 'logs', current_time, 'test')
-    # train_writer = tf.summary.FileWriter(train_log_dir)
-    train_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=10000)
-    test_writer = tf.contrib.summary.create_file_writer(test_log_dir)
-
-    global_step = tf.train.get_or_create_global_step()
-    train_writer.set_as_default()
 
     '''
     # self._writer = tf.contrib.summary.create_file_writer('path')
@@ -325,20 +335,13 @@ if __name__ == '__main__':
     projector.visualize_embeddings(DummyFileWriter(), embedding_config)
     '''
 
-
-
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
-
-
-
-
 
     trainer = Train(model, loss_func, dataset, optimizer, metrics=metrics)
     trainer.start()
 
     print('debug')
-
 
 
 """
