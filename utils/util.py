@@ -3,9 +3,9 @@ import os
 import numpy as np
 
 
-DEBUG = False
+DEBUG = True
 
-def get_dataset(data_path, shuffle=True):
+def get_dataset(data_path, shuffle=True, validation_ratio=0.0):
     '''
 data_path dir style:
 data
@@ -36,4 +36,19 @@ data
         images_path = images[:, 0]
         images_label = images[:, 1].astype(np.int32)
 
-    return images_path, images_label
+    if DEBUG:
+        images_path = images_path[0:500]
+        images_label = images_label[0:500]
+
+    if validation_ratio > 0.0:
+        if not shuffle:
+            raise Exception('When there is a validation set split requirement, shuffle must be True.')
+        validation_size = int(len(images_path) * validation_ratio)
+        validation_images_path = images_path[0:validation_size]
+        validation_images_label = images_label[0:validation_size]
+
+        train_images_path = images_path[validation_size:]
+        train_images_label = images_label[validation_size:]
+        return train_images_path, train_images_label, validation_images_path, validation_images_label
+    else:
+        return images_path, images_label

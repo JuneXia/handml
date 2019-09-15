@@ -191,8 +191,8 @@ class AccumulatedAccuaracyMetric(tf.keras.layers.Layer):
         self.metric_acc = tf.keras.metrics.Accuracy(name)
 
     def __call__(self, *args, **kwargs):
-        predicts, labels, loss_step = args
-        return self.metric_acc(predicts, labels)
+        labels, predicts, loss_step = args
+        return self.metric_acc(labels, predicts)
 
     def name(self):
         return self.metric_acc.name
@@ -214,8 +214,8 @@ class AccumulatedBinaryAccuracyMetric(tf.keras.layers.Layer):
         self.metric_acc = metric_fuc
 
     def __call__(self, *args, **kwargs):
-        predicts, labels, loss_step = args
-        return self.metric_acc(predicts, labels)
+        labels, predicts, loss_step = args
+        return self.metric_acc(labels, predicts)
 
     def name(self):
         return self.metric_acc.name
@@ -240,12 +240,13 @@ class OneShotNet(tf.keras.layers.Layer):
 
 
 class Train(object):
-    def __init__(self, model, loss_func, dataset, optimizer, metrics=[]):
+    def __init__(self, model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[]):
         super(Train, self).__init__()
 
         self.model = model
         self.loss_func = loss_func
-        self.dataset = dataset
+        self.train_dataset = train_dataset
+        self.validation_dataset = validation_dataset
         self.optimizer = optimizer
         self.metrics = metrics
 
@@ -257,10 +258,11 @@ class Train(object):
         self.summary_writer.set_as_default()
 
     def start(self):
-        epoch_size = 10
+        self.epoch_size = 10
         with tf.contrib.summary.record_summaries_every_n_global_steps(5, self.global_step):
-            for epoch in range(epoch_size):
-                for batch, (images, labels) in enumerate(dataset):
+            for epoch in range(self.epoch_size):
+                '''
+                for batch, (images, labels) in enumerate(self.train_dataset):
                     self.global_step.assign_add(1)
                     with tf.GradientTape() as t:
                         outputs = self.model(images)
@@ -271,13 +273,73 @@ class Train(object):
                     self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
 
                     print('global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
-                                                                                epoch_size,
+                                                                                self.epoch_size,
                                                                                 batch), end=' ')
-                    for metric in metrics:
+                    for metric in self.metrics:
                         rslt = metric(labels, outputs, loss_step)
                         tf.contrib.summary.scalar(metric.name(), rslt)
                         print(metric.name(), rslt.numpy(), end=' ')
                     print('')
+                '''
+                self.train(epoch)
+                self.validation(epoch)
+
+
+                '''
+                for metric in self.metrics:
+                    metric.reset_states()
+                for batch, (images, labels) in enumerate(self.validation_dataset):
+                    outputs = self.model(images)
+                    labels = labels.reshape((-1, 1))
+                    loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+
+                    for metric in self.metrics:
+                        rslt = metric(labels, outputs, loss_step)
+                        tf.contrib.summary.scalar(metric.name(), rslt)
+                print(metric.name(), rslt.result())
+                '''
+
+    def train(self, epoch):
+        for metric in self.metrics:
+            metric.reset_states()
+
+        for batch, (images, labels) in enumerate(self.train_dataset):
+            self.global_step.assign_add(1)
+            with tf.GradientTape() as t:
+                outputs = self.model(images)
+                labels = labels.reshape((-1, 1))
+                loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+
+            grads = t.gradient(loss_step, model.trainable_variables)
+            self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
+
+            print('Training: global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
+                                                                        self.epoch_size,
+                                                                        batch), end=' ')
+            for metric in self.metrics:
+                rslt = metric(labels, outputs, loss_step)
+                tf.contrib.summary.scalar('train_' + metric.name(), rslt)
+                print(metric.name(), rslt.numpy(), end=' ')
+            print('')
+
+    def validation(self, epoch):
+        for metric in self.metrics:
+            metric.reset_states()
+
+        for batch, (images, labels) in enumerate(self.validation_dataset):
+            outputs = self.model(images)
+            labels = labels.reshape((-1, 1))
+            loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+
+            for metric in self.metrics:
+                rslt = metric(labels, outputs, loss_step)
+                tf.contrib.summary.scalar('validate_' + metric.name(), rslt)
+
+        # print('Validate: global step: {}, epoch: {}/{}'.format(self.global_step.numpy(), epoch, self.epoch_size), end=' ')
+        print('Validate: ', end=' ')
+        for metric in self.metrics:
+            print(metric.name(), metric.result().numpy(), end=' ')
+        print('')
 
 
 def learning_rate_sche(epoch):
@@ -296,11 +358,13 @@ class DummyFileWriter(object):
 
 
 if __name__ == '__main__':
-    images_path, images_label = util.get_dataset(g_datapath)
-    num_class = len(set(images_label))
+    train_images_path, train_images_label, validation_images_path, validation_images_label = util.get_dataset(g_datapath, validation_ratio=0.2)
+    num_class = len(set(train_images_label))
     batch_size = 100
-    dataset = datset.SiameseDataset(images_path, images_label)
-    dataset = datset.DataIterator(dataset, batch_size=batch_size)
+    train_dataset = datset.SiameseDataset(train_images_path, train_images_label)
+    validation_dataset = datset.SiameseDataset(validation_images_path, validation_images_label, is_train=False)
+    train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
+    validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
 
     model = tf.keras.Sequential([
         tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
@@ -322,8 +386,8 @@ if __name__ == '__main__':
     # loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     loss_func = ComplexLoss()
 
-    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('train_bin_acc'))
-    metrics = [AccumulatedLossMetric('train_loss'), metric_train_acc]
+    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
+    metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
 
     '''
     # self._writer = tf.contrib.summary.create_file_writer('path')
@@ -338,7 +402,7 @@ if __name__ == '__main__':
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
 
-    trainer = Train(model, loss_func, dataset, optimizer, metrics=metrics)
+    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=metrics)
     trainer.start()
 
     print('debug')

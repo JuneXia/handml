@@ -414,19 +414,29 @@ class SiameseDataset(object):
                                      for label in self.labels_set}
         else:
             # generate fixed pairs for testing
-            self.test_labels = self.mnist_dataset.test_labels
-            self.test_data = self.mnist_dataset.test_data
-            self.labels_set = set(self.test_labels.numpy())
-            self.label_to_indices = {label: np.where(self.test_labels.numpy() == label)[0]
+            self.test_labels = self.labels
+            self.test_data = self.datas
+            self.labels_set = set(self.test_labels)
+            self.label_to_indices = {label: np.where(self.test_labels == label)[0]
                                      for label in self.labels_set}
 
             random_state = np.random.RandomState(29)
 
+            '''
             positive_pairs = [[i,
                                random_state.choice(self.label_to_indices[self.test_labels[i].item()]),
                                1]
                               for i in range(0, len(self.test_data), 2)]
+            '''
 
+            positive_pairs = []
+            for i in range(0, len(self.test_data), 2):
+                state = random_state.choice(self.label_to_indices[self.test_labels[i].item()])
+                positive_pairs.append([i, state, 1])
+
+
+
+            '''
             negative_pairs = [[i,
                                random_state.choice(self.label_to_indices[
                                                        np.random.choice(
@@ -435,6 +445,22 @@ class SiameseDataset(object):
                                                    ]),
                                0]
                               for i in range(1, len(self.test_data), 2)]
+            '''
+
+
+
+            negative_pairs = []
+            for i in range(1, len(self.test_data), 2):
+                state = random_state.choice(self.label_to_indices[
+                                                       np.random.choice(
+                                                           list(self.labels_set - set([self.test_labels[i].item()]))
+                                                       )
+                                                   ])
+
+                negative_pairs.append([i, state, 0])
+
+
+
             self.test_pairs = positive_pairs + negative_pairs
 
     def __getitem__(self, index):
