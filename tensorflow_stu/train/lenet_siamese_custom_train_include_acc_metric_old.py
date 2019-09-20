@@ -1,4 +1,5 @@
 # -*- coding: UTF-8 -*-
+# /usr/
 import os
 import sys
 project_path = os.path.abspath(os.path.dirname(os.path.dirname(__file__)))
@@ -6,9 +7,10 @@ sys.path.append(project_path)
 
 from datasets import dataset as datset
 import tensorflow as tf
+import tensorflow.contrib.eager as tfe
 from utils import util
 import datetime
-from tensorflow.contrib.tensorboard.plugins import projector
+import numpy as np
 
 import socket
 import getpass
@@ -120,14 +122,49 @@ Epoch 9 batch 680 train loss:0.2685726284980774, train acc:0.8453999757766724
         # self.add_metric(bincross_loss)
 
 
-class SiameseNet(tf.keras.layers.Layer):
-    def __init__(self, embedding_net):
+class SiameseNet(tf.keras.Model):
+    """
+    There are not save_weights function if inherit tf.keras.layers.Layer
+    """
+    def __init__(self, embedding_net, imshape=(28, 28, 1)):
         super(SiameseNet, self).__init__()
         self.embedding_net = embedding_net
         self.l1_layer = tf.keras.layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))
-        self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')
-        # self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid', bias_initializer=b_init)
+        self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')  # TODO: This fc1_layer should not in the siamese-network.
         self.predicts = None
+
+        # TODO: Just to get model variable explicit
+        data = np.ones((10, ) + imshape, dtype=np.float32)
+        self.call((data, data))
+
+    def build_failed(self, input_shape):
+        '''
+        for batch, (images, labels) in enumerate(self.validation_dataset):
+            outputs = self.model(images)
+            labels = labels.reshape((-1, 1))
+            loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
+        '''
+
+        shape = tf.TensorShape((input_shape[1], self.output_dim))
+        # Create a trainable weight variable for this layer.
+        self.kernel = self.add_weight(name='kernel',
+                                      shape=shape,
+                                      initializer='uniform',
+                                      trainable=True)
+        # Be sure to call this at the end
+        super(SiameseNet, self).build(input_shape)
+
+
+    '''
+    def build(self, input_shape):
+        # The build method gets called the first time your layer is used.
+        # Creating variables on build() allows you to make their shape depend
+        # on the input shape and hence removes the need for the user to specify
+        # full shapes. It is possible to create variables during __init__() if
+        # you already know their full shapes.
+        self.kernel = self.add_variable(
+            "kernel", [input_shape[-1], self.output_units])
+    '''
 
     def call(self, inputs, **kwargs):
         emb1 = self.embedding_net(inputs[0])
@@ -239,8 +276,59 @@ class OneShotNet(tf.keras.layers.Layer):
         print('debug')
 
 
+class Checkpint(tf.keras.callbacks.Callback):
+    def __init__(self, save_path):
+        super(Checkpint, self).__init__()
+        self.save_path = save_path
+        # tf.keras.callbacks.ModelCheckpoint(filepath)
+
+        self.checkpoint_path = os.path.join(self.save_path, 'ckpt')
+
+    def set_params(self, params):
+        self.params = params
+
+    def set_model(self, model):
+        self.model = model
+
+        # tensorflow 1.x适用
+        self.saver = tfe.Saver(self.model.variables)
+
+    def on_epoch_begin(self, epoch, logs=None):
+        pass
+
+    def on_epoch_end(self, epoch, logs=None):
+        # TODO: 这里使用epoch代替 global_step，因为self.saver.save函数没有epoch参数。
+        self.saver.save(self.checkpoint_path, global_step=epoch)
+
+
+def SaveCheckpoint(model, save_path, global_step):
+    checkpoint_path = os.path.join(save_path, 'ckpt')
+
+    # tensorflow 1.x适用
+    tfe.Saver(model.variables).save(checkpoint_path, global_step=global_step)
+
+    # 发现模型恢复时，不能获取动态图的变量，可能需要在模型__init__中add_variable或者add_weights
+
+    # model.save_weights(checkpoint_path)  # ok, 这个应该是只能保存最后一次weights
+    # model.save(os.path.join('./save_model', 'mymodel.h5'))  # failed
+
+    # tensorflow 2.0适用
+    # checkpoint = tf.train.Checkpoint(optimizer=self.optimizer, model=self.model, optimizer_step=self.global_step)
+    # checkpoint.save(file_prefix=checkpoint_path)
+
+def RestoreCheckpoint(model, model_path):
+    checkpoint = tf.train.Checkpoint(model=model)
+    status = checkpoint.restore(tf.train.latest_checkpoint(model_path))
+
+    print('debug')
+    # model.load_weights(checkpoint_path)
+
+    # saver = tfe.Saver(model.variables)
+    # saver.restore(tf.train.latest_checkpoint(checkpoint_path))
+
+
 class Train(object):
-    def __init__(self, model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[]):
+    def __init__(self, model, loss_func, train_dataset=None, validation_dataset=None, optimizer=None, metrics=[]):
         super(Train, self).__init__()
 
         self.model = model
@@ -250,54 +338,22 @@ class Train(object):
         self.optimizer = optimizer
         self.metrics = metrics
 
-        current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-        train_log_dir = os.path.join(project_path, 'logs', current_time)
-        # summary_writer 一定要写成成员变量，因为这会常住内存，否则会报错。
-        self.summary_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=1000)
-        self.global_step = tf.train.get_or_create_global_step()
-        self.summary_writer.set_as_default()
+        if train_dataset is not None:
+            current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+            train_log_dir = os.path.join(project_path, 'logs', current_time)
+            # summary_writer 一定要写成成员变量，因为这会常住内存，否则会报错。
+            self.summary_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=1000)
+            self.global_step = tf.train.get_or_create_global_step()
+            self.summary_writer.set_as_default()
 
-    def start(self):
-        self.epoch_size = 10
+    def start(self, epoch_size=1, checkpoint=None):
+        self.epoch_size = epoch_size
+        checkpoint.set_model(model)
         with tf.contrib.summary.record_summaries_every_n_global_steps(5, self.global_step):
             for epoch in range(self.epoch_size):
-                '''
-                for batch, (images, labels) in enumerate(self.train_dataset):
-                    self.global_step.assign_add(1)
-                    with tf.GradientTape() as t:
-                        outputs = self.model(images)
-                        labels = labels.reshape((-1, 1))
-                        loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
-
-                    grads = t.gradient(loss_step, model.trainable_variables)
-                    self.optimizer.apply_gradients(zip(grads, model.trainable_variables))
-
-                    print('global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
-                                                                                self.epoch_size,
-                                                                                batch), end=' ')
-                    for metric in self.metrics:
-                        rslt = metric(labels, outputs, loss_step)
-                        tf.contrib.summary.scalar(metric.name(), rslt)
-                        print(metric.name(), rslt.numpy(), end=' ')
-                    print('')
-                '''
                 self.train(epoch)
-                self.validation(epoch)
-
-
-                '''
-                for metric in self.metrics:
-                    metric.reset_states()
-                for batch, (images, labels) in enumerate(self.validation_dataset):
-                    outputs = self.model(images)
-                    labels = labels.reshape((-1, 1))
-                    loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
-
-                    for metric in self.metrics:
-                        rslt = metric(labels, outputs, loss_step)
-                        tf.contrib.summary.scalar(metric.name(), rslt)
-                print(metric.name(), rslt.result())
-                '''
+                self.validation()
+                checkpoint.on_epoch_end(epoch)
 
     def train(self, epoch):
         for metric in self.metrics:
@@ -322,7 +378,11 @@ class Train(object):
                 print(metric.name(), rslt.numpy(), end=' ')
             print('')
 
-    def validation(self, epoch):
+    def validation(self):
+        embedding_visualize = True
+        if embedding_visualize:
+            output_list = []
+            label_list = []
         for metric in self.metrics:
             metric.reset_states()
 
@@ -331,15 +391,22 @@ class Train(object):
             labels = labels.reshape((-1, 1))
             loss_step = self.loss_func(labels, outputs, (self.model.emb1, self.model.emb2))
 
+            if embedding_visualize:
+                output_list.extend(outputs)
+                label_list.extend(labels)
+
             for metric in self.metrics:
                 rslt = metric(labels, outputs, loss_step)
                 tf.contrib.summary.scalar('validate_' + metric.name(), rslt)
 
-        # print('Validate: global step: {}, epoch: {}/{}'.format(self.global_step.numpy(), epoch, self.epoch_size), end=' ')
         print('Validate: ', end=' ')
         for metric in self.metrics:
             print(metric.name(), metric.result().numpy(), end=' ')
         print('')
+
+        if embedding_visualize:
+            output_list = np.array(output_list)
+            # EmbVisual.visualisation(output_list)
 
 
 def learning_rate_sche(epoch):
@@ -357,8 +424,22 @@ class DummyFileWriter(object):
     return './logs'
 
 
-if __name__ == '__main__':
-    train_images_path, train_images_label, validation_images_path, validation_images_label = util.get_dataset(g_datapath, validation_ratio=0.2)
+
+def projector_embedding():
+    '''
+        # self._writer = tf.contrib.summary.create_file_writer('path')
+        embedding_config = projector.ProjectorConfig()
+        embedding = embedding_config.embeddings.add()
+        embedding.tensor_name = emb.name
+        embedding.metadata_path = 'metadata.tsv'
+        # projector.visualize_embeddings(train_writer, embedding_config)
+        projector.visualize_embeddings(DummyFileWriter(), embedding_config)
+    '''
+    pass
+
+
+if __name__ == '__main__1':
+    train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
     num_class = len(set(train_images_label))
     batch_size = 100
     train_dataset = datset.SiameseDataset(train_images_path, train_images_label)
@@ -389,23 +470,54 @@ if __name__ == '__main__':
     metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
     metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
 
-    '''
-    # self._writer = tf.contrib.summary.create_file_writer('path')
-    embedding_config = projector.ProjectorConfig()
-    embedding = embedding_config.embeddings.add()
-    embedding.tensor_name = emb.name
-    embedding.metadata_path = 'metadata.tsv'
-    # projector.visualize_embeddings(train_writer, embedding_config)
-    projector.visualize_embeddings(DummyFileWriter(), embedding_config)
-    '''
-
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
+    checkpoint_save_path = './save_model'
+    checkpoint = Checkpint(checkpoint_save_path)
 
     trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=metrics)
-    trainer.start()
+    trainer.start(epoch_size=2, checkpoint=checkpoint)
+
+    #  >>> TODO: 看官方文档：https://www.tensorflow.org/guide/keras#weights_only
+    ## TODO: 研究下 tf.train.CheckpointManager()
+    print('debug')
+
+
+if __name__ == '__main__':
+    train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
+    num_class = len(set(train_images_label))
+    batch_size = 100
+    train_dataset = datset.SiameseDataset(train_images_path, train_images_label)
+    validation_dataset = datset.SiameseDataset(validation_images_path, validation_images_label, is_train=False)
+    train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
+    validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
+
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
+        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
+        tf.keras.layers.GlobalMaxPool2D(),
+        tf.keras.layers.Dense(10)
+    ])
+    emb = model.output
+    # model = SiameseNet(model)
+
+    optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
+
+    loss_func = ComplexLoss()
+
+    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
+    metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
+
+    model_path = './save_model'
+    RestoreCheckpoint(model, model_path)
+
+    trainer = Train(model, loss_func, validation_dataset=validation_dataset, metrics=metrics)
+    trainer.validation()
 
     print('debug')
+
+
+
 
 
 """
