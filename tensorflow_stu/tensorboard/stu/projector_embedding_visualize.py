@@ -1,5 +1,5 @@
 import tensorflow as tf
-import mnist_inference
+from visualize import mnist_inference
 import os
 
 from tensorflow.contrib.tensorboard.plugins import projector
@@ -89,6 +89,7 @@ def visualisation(final_result):
     saver.save(sess, os.path.join(LOG_DIR, "model"), TRAINING_STEPS)
 
     summary_writer.close()
+
 
 def main(argv=None):
     mnist = input_data.read_data_sets("./MNIST_data", one_hot=True)

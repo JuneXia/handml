@@ -43,10 +43,11 @@ def demo2():
     next_element = iterator.get_next()
 
     with tf.Session() as sess:
-        for i in range(100):
+        for i in range(1000):
             value = sess.run(next_element)
+            print(value)
 
-            assert i == value
+            # assert i == value
 
 ## 可初始化迭代器
 def demo3():
@@ -309,7 +310,7 @@ def demo9():
 
 
 if __name__ == '__main__':
-    demo9()
+    demo2()
 
     print('debug')
 

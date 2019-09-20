@@ -1,4 +1,7 @@
 # -*- coding: UTF-8 -*-
+
+raise Exception('已经迁移至 dev/FlaskFace, 并已经在本项目handml/utils/目录下建立软链接 dataset.py')
+
 import os
 import math
 import random
@@ -7,6 +10,8 @@ import numpy as np
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.utils import to_categorical
+
+DEBUG = True
 
 
 class ImageClass():
@@ -46,6 +51,73 @@ def get_dataset(path, has_class_directories=True):
         dataset.append(ImageClass(class_name, image_paths))
 
     return dataset
+
+
+def load_dataset(data_path, shuffle=True, validation_ratio=0.0, min_nrof_cls=1, max_nrof_cls=999999999):
+    '''
+data_path dir style:
+data
+├── folder1
+│   ├── 00063.jpg
+│   ├── 00068.jpg
+└── folder2
+    ├── 00070.jpg
+    ├── 00072.jpg
+
+    :param data_path:
+    :param shuffle:
+    :param validation_ratio: if > 0: will split train-set and validation-set,
+           其中， validation-set accounts for is validation_ratio.
+    :param min_nrof_cls: min number samples of each class
+    :param max_nrof_cls: max number samples of each class
+    :return:
+    '''
+    images_path = []
+    images_label = []
+    images = os.listdir(data_path)
+    images.sort()
+    if DEBUG:
+        images = images[0:2]
+    for i, image in enumerate(images):
+        cls_path = os.path.join(data_path, image)
+        if os.path.isfile(cls_path):
+            print('[load_dataset]:: {} is not dir!'.format(cls_path))
+            continue
+            
+        imgs = os.listdir(cls_path)
+        if len(imgs) < min_nrof_cls:
+            continue
+        if len(imgs) > max_nrof_cls:
+            np.random.shuffle(imgs)
+            imgs = imgs[0:max_nrof_cls]
+
+        images_path.extend([os.path.join(data_path, image, img) for img in imgs])
+        images_label.extend([i] * len(imgs))
+
+    images = np.array([images_path, images_label]).transpose()
+
+    if shuffle:
+        np.random.shuffle(images)
+
+    images_path = images[:, 0]
+    images_label = images[:, 1].astype(np.int32)
+
+    if DEBUG and False:
+        images_path = images_path[0:500]
+        images_label = images_label[0:500]
+
+    if validation_ratio > 0.0:
+        if not shuffle:
+            raise Exception('When there is a validation set split requirement, shuffle must be True.')
+        validation_size = int(len(images_path) * validation_ratio)
+        validation_images_path = images_path[0:validation_size]
+        validation_images_label = images_label[0:validation_size]
+
+        train_images_path = images_path[validation_size:]
+        train_images_label = images_label[validation_size:]
+        return train_images_path, train_images_label, validation_images_path, validation_images_label
+    else:
+        return images_path, images_label
 
 
 def split_dataset(dataset, split_ratio, min_nrof_images_per_class, mode):
@@ -121,9 +193,9 @@ FIXED_STANDARDIZATION = 8
 FLIP = 16
 def _parse_function(filename, label):
     shape = [28, 28, 1]
-    image_string = tf.read_file(filename)
-    image_decoded = tf.image.decode_image(image_string, shape[2])
-    # image_tensor = tf.convert_to_tensor(image_decoded, dtype=tf.float32)
+    image = tf.read_file(filename)
+    image = tf.image.decode_image(image, shape[2])
+    # image = tf.convert_to_tensor(image, dtype=tf.float32)
 
     # >>>>在不知道图像尺寸的情况下，是不能乱set_shape的，仿照facenet.py中创建pipeline的方法写。
     """
@@ -147,8 +219,9 @@ def _parse_function(filename, label):
     images.append(image)
     """
 
-    image_resized = tf.image.resize_image_with_crop_or_pad(image_decoded, shape[0], shape[1])
-    return image_resized, label
+    image = tf.image.resize_image_with_crop_or_pad(image, shape[0], shape[1])
+    image = tf.cast(image, dtype=tf.float32)
+    return image, label
 
 
 class DataSet(object):
@@ -175,6 +248,78 @@ class DataSet(object):
 
         iterator = dataset.make_one_shot_iterator()
         self.get_next = iterator.get_next()
+
+
+class TFDataset(object):
+    def __init__(self, datas, labels, is_train=True):
+        super(TFDataset, self).__init__()
+        batch_size = 100
+        buffer_size = 1000
+        repeat = 1
+        self.epoch_size = math.ceil(len(datas) / batch_size)  # 迭代一轮所需要的训练次数
+
+        filenames = tf.constant(datas)
+        labels = tf.constant(labels)
+
+        # 此时dataset中的一个元素是(filename, label)
+        dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+
+        # 此时dataset中的一个元素是(image_resized, label)
+        dataset = dataset.map(_parse_function)
+
+        # 此时dataset中的一个元素是(image_resized_batch, label_batch)
+        # dataset = dataset.shuffle(buffer_size=1000).batch(32).repeat(10)
+        dataset = dataset.shuffle(buffer_size=buffer_size, seed=tf.set_random_seed(666),
+                                  reshuffle_each_iteration=True).batch(batch_size).repeat(repeat)
+
+        iterator = dataset.make_one_shot_iterator()
+        self.get_next = iterator.get_next()
+
+    def __iter__(self):
+        self.count = 0
+        return self
+
+    def __next__(self):
+        self.count += 1
+        return self.get_next
+
+        if self.count == len(self.dataset):
+            raise StopIteration
+
+        images = []
+        labels = []
+        start_index = min(len(self.dataset), self.count)
+        end_index = min(len(self.dataset), self.count + self.batch_size)
+
+        # datas = self.dataset[start_index:end_index]  # 如果是SiameseDataset则无法使用start:end这种索引方式，不过下面这个方式是通用的。
+
+        for i, index in enumerate(range(start_index, end_index)):
+            data = self.dataset[index]
+            (img1, img2), label = data
+
+            image_pair = []
+            channel = 1
+            for img in [img1, img2]:
+                if channel == 1:
+                    image = cv2.imread(img, cv2.IMREAD_GRAYSCALE)
+                    image = np.expand_dims(image, axis=2)
+                elif channel == 3:
+                    image = cv2.imread(data)
+                else:
+                    raise Exception("just support 1 and 3 channel!")
+                image = image.astype(np.float32)
+                image = image / 255.0
+                image_pair.append(image)
+
+            labels.append(label)
+            images.append(image_pair)
+            self.count += 1
+        images = np.array(images)
+        images1 = images[:, 0]
+        images2 = images[:, 1]
+        labels = np.array(labels)
+
+        return (images1, images2), labels
 
 
 class FaceDataset:
@@ -447,21 +592,15 @@ class SiameseDataset(object):
                               for i in range(1, len(self.test_data), 2)]
             '''
 
-
-
             negative_pairs = []
             for i in range(1, len(self.test_data), 2):
-                state = random_state.choice(self.label_to_indices[
-                                                       np.random.choice(
-                                                           list(self.labels_set - set([self.test_labels[i].item()]))
-                                                       )
-                                                   ])
-
-                negative_pairs.append([i, state, 0])
-
-
+                label1 = self.test_labels[i].item()
+                siamese_label = np.random.choice(list(self.labels_set - set([label1])))
+                siamese_index = random_state.choice(self.label_to_indices[siamese_label])
+                negative_pairs.append([i, siamese_index, 0])
 
             self.test_pairs = positive_pairs + negative_pairs
+            np.random.shuffle(self.test_pairs)
 
     def __getitem__(self, index):
         if self.train:
