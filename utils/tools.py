@@ -13,7 +13,7 @@ import shutil
 from sklearn.manifold import TSNE
 
 DEBUG = True
-
+print('just test windows!')
 
 def view_bar(message, num, total):
     """
