@@ -124,28 +124,15 @@ Epoch 9 batch 680 train loss:0.2685726284980774, train acc:0.8453999757766724
 
 
 class SiameseNet(tf.keras.Model):
-    """
-    There are not save_weights function if inherit from tf.keras.layers.Layer
-    """
-    def __init__(self, embedding_net, imshape=(28, 28, 1)):
+    def __init__(self, embedding_net):
         super(SiameseNet, self).__init__()
         self.embedding_net = embedding_net
-        #self.l1_layer = tf.keras.layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))
-        #self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')  # TODO: This fc1_layer should not in the siamese-network.
-        #self.predicts = None
-
-        # TODO: Just to get model variable explicit
-        #data = np.ones((10, ) + imshape, dtype=np.float32)
-        #self.call((data, data))
 
     def call(self, inputs, **kwargs):
         emb1 = self.embedding_net(inputs[0])
         emb2 = self.embedding_net(inputs[1])
 
         return emb1, emb2
-
-    def get_output(self):
-        return self.predicts
 
 
 class SiameseBinClassifyNet(tf.keras.Model):
@@ -209,6 +196,29 @@ class SiameseBinClassifyNet(tf.keras.Model):
         return self.predicts
 
 
+class ContrastiveBinClassifyNet(tf.keras.Model):
+    def __init__(self):
+        super(ContrastiveBinClassifyNet, self).__init__()
+        self.L1_layer = tf.keras.layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))
+        self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')
+
+    def call(self, inputs, training=None, mask=None):
+        emb1, emb2 = inputs
+
+        L1_dist = self.L1_layer([emb1, emb2])
+
+        # l1_dist = tf.reduce_sum(tf.abs(emb1 - emb2), axis=1)
+        # l1_dist = tf.expand_dims(l1_dist, axis=1)
+
+        predicts = self.fc1(L1_dist)
+
+        return predicts, (emb1, emb2)
+
+    def get_output(self):
+        print('debug')
+        return None
+
+
 class ClassificationNet(tf.keras.layers.Layer):
     def __init__(self, embedding_net, num_class):
         super(ClassificationNet, self).__init__()
@@ -266,13 +276,9 @@ class AccumulatedAccuaracyMetric(tf.keras.layers.Layer):
 
 
 class AccumulatedBinaryAccuracyMetric(tf.keras.layers.Layer):
-    def __init1__(self, name='acc'):
+    def __init__(self, name='acc'):
         super(AccumulatedBinaryAccuracyMetric, self).__init__()
         self.metric_acc = tf.keras.metrics.BinaryAccuracy(name)
-
-    def __init__(self, metric_fuc):
-        super(AccumulatedBinaryAccuracyMetric, self).__init__()
-        self.metric_acc = metric_fuc
 
     def __call__(self, *args, **kwargs):
         labels, (predicts, _), loss_step = args
@@ -486,8 +492,8 @@ class Train(object):
         emb_labels = []
         losses = []
         for batch, (images, labels) in enumerate(self.validation_dataset):
-            outputs = self.model(images)
-            embs1, embs2 = [output.numpy() for output in outputs]
+            predicts, (emb1, emb2) = self.model(images)
+            embs1, embs2 = emb1.numpy(), emb2.numpy()
             labels = labels.reshape((-1, 1))
             embeddings1.extend(embs1)
             embeddings2.extend(embs2)
@@ -505,7 +511,6 @@ class Train(object):
             tf.contrib.summary.scalar('evaluate_' + metric.name(), rslt)
             print(metric.name(), rslt.numpy(), end=' ')
         print('')
-
 
 
 def learning_rate_sche(epoch):
@@ -536,7 +541,7 @@ def projector_embedding():
     pass
 
 
-if __name__ == '__main__':  # SiameseBinClassifyNet
+if __name__ == '__main__':  # ContrastiveBinClassifyNet_SiameseNet_train
     train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
     num_class = len(set(train_images_label))
     batch_size = 100
@@ -545,161 +550,39 @@ if __name__ == '__main__':  # SiameseBinClassifyNet
     train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
     validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
 
+    embedding_net = tf.keras.Sequential([
+            tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
+            tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
+            tf.keras.layers.GlobalMaxPool2D(),
+            tf.keras.layers.Dense(32)
+        ])
     model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
-        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-        tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(10)
+        SiameseNet(embedding_net),
+        ContrastiveBinClassifyNet()
     ])
-    emb = model.output
-    # model = ClassificationNet(model, num_class)
-    model = SiameseBinClassifyNet(model)
-    # model = OneShotNet(model)
-    # model = tf.keras.Sequential([model, OneShotNet(model)])
 
     # optimizer = tf.keras.optimizers.Adam()
     optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
 
     # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-    # contrast_loss_func = ContrastiveLoss()
-    loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    loss_func = ComplexLoss()
-
-    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
-    metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
-
-    # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
-    lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
-    checkpoint_save_path = './save_model'
-    checkpoint = Checkpint(checkpoint_save_path)
-
-    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=metrics)
-    trainer.start(epoch_size=2, checkpoint=checkpoint)
-
-    #  >>> TODO: 看官方文档：https://www.tensorflow.org/guide/keras#weights_only
-    ## TODO: 研究下 tf.train.CheckpointManager()
-    print('debug')
-
-
-if __name__ == '__main__test':  # SiameseBinClassifyNet
-    train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
-    num_class = len(set(train_images_label))
-    batch_size = 100
-    train_dataset = datset.SiameseDataset(train_images_path, train_images_label)
-    validation_dataset = datset.SiameseDataset(validation_images_path, validation_images_label, is_train=False)
-    train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
-    validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
-
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
-        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-        tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(10)
-    ])
-    emb = model.output
-    # model = SiameseBinClassifyNet(model)
-
-    optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
-
-    loss_func = ComplexLoss()
-
-    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
-    metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
-
-    model_path = './save_model'
-    RestoreCheckpoint(model, model_path)
-
-    trainer = Train(model, loss_func, validation_dataset=validation_dataset, metrics=metrics)
-    trainer.validation()
-
-    print('debug')
-
-
-if __name__ == '__main__extract embedding':  # SiameseBinClassifyNet: extract embedding
-    validation_images_path, validation_images_label = datset.load_dataset(g_datapath, max_nrof_cls=100)
-
-    batch_size = 100
-    buffer_size = 1000
-    repeat = 1
-
-    filenames = tf.constant(validation_images_path)
-    labels = tf.constant(validation_images_label)
-    dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-    dataset = dataset.map(datset._parse_function)
-    dataset = dataset.shuffle(buffer_size=buffer_size, seed=tf.set_random_seed(666),
-                              reshuffle_each_iteration=True).batch(batch_size).repeat(1)
-
-    # dataset = datset.TFDataset(validation_images_path, validation_images_label)
-
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
-        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-        tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(10)
-    ])
-    # model = SiameseBinClassifyNet(model)
-
-    model_path = './save_model'
-    RestoreCheckpoint(model, model_path)
-
-    embeddings = []
-    emb_labels = []
-    for (batch, (images, labels)) in enumerate(dataset):
-        print(batch, images.shape, labels.shape)
-        embs = model(images)
-        embeddings.extend(embs.numpy())
-        emb_labels.extend(labels.numpy())
-    embeddings = np.array(embeddings)
-    emb_labels = np.array(emb_labels)
-
-    result = tools.dim_reduct(embeddings)
-
-    print('plot_embedding')
-    tools.plot_embedding(data=result, label=emb_labels, title='t-SNE embedding')
-
-
-if __name__ == '__main__SiameseNet':  # SiameseNet
-    train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
-    num_class = len(set(train_images_label))
-    batch_size = 100
-    train_dataset = datset.SiameseDataset(train_images_path, train_images_label)
-    validation_dataset = datset.SiameseDataset(validation_images_path, validation_images_label, is_train=False)
-    train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
-    validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
-
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
-        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-        tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(10)
-    ])
-    # emb = model.output
-    # model = ClassificationNet(model, num_class)
-    model = SiameseNet(model)
-    # model = OneShotNet(model)
-    # model = tf.keras.Sequential([model, OneShotNet(model)])
-
-    # optimizer = tf.keras.optimizers.Adam()
-    optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
-
-    # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-    # contrast_loss_func = ContrastiveLoss()
+    # loss_func = ContrastiveLoss()
     # loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
-    loss_func = ContrastiveLoss()
+    loss_func = ComplexLoss()
 
     # metric_train_acc = AccumulatedEmbeddingAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
     # metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
 
     loss_metric = AccumulatedLossMetric('loss')
-    acc_metric = AccumulatedEmbeddingAccuracyMetric('acc')
+    train_acc_metric = AccumulatedBinaryAccuracyMetric('train_acc')
+    evaluate_acc_metric = AccumulatedEmbeddingAccuracyMetric('evaluate_acc')
 
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
     checkpoint_save_path = './save_model'
     checkpoint = Checkpint(checkpoint_save_path)
 
-    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[loss_metric])
-    trainer.set_metrics(validate_metrics=[acc_metric])
+    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[loss_metric, train_acc_metric])
+    trainer.set_metrics(validate_metrics=[evaluate_acc_metric])
     trainer.start(epoch_size=100, checkpoint=checkpoint)
 
     #  >>> TODO: 看官方文档：https://www.tensorflow.org/guide/keras#weights_only
@@ -714,7 +597,3 @@ https://zhuanlan.zhihu.com/p/66648325
 https://tf.wiki/zh/basic/models.html
 https://www.zybuluo.com/Team/note/1491361
 """
-
-
-
-把SiameseBinClassifyNet拆分成SiameseNet和BinClassifyNet
