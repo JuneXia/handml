@@ -266,13 +266,9 @@ class AccumulatedAccuaracyMetric(tf.keras.layers.Layer):
 
 
 class AccumulatedBinaryAccuracyMetric(tf.keras.layers.Layer):
-    def __init1__(self, name='acc'):
+    def __init__(self, name='acc'):
         super(AccumulatedBinaryAccuracyMetric, self).__init__()
         self.metric_acc = tf.keras.metrics.BinaryAccuracy(name)
-
-    def __init__(self, metric_fuc):
-        super(AccumulatedBinaryAccuracyMetric, self).__init__()
-        self.metric_acc = metric_fuc
 
     def __call__(self, *args, **kwargs):
         labels, (predicts, _), loss_step = args
@@ -565,15 +561,18 @@ if __name__ == '__main__':  # SiameseBinClassifyNet
     loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     loss_func = ComplexLoss()
 
-    metric_train_acc = AccumulatedBinaryAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
-    metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
+    loss_metric = AccumulatedLossMetric('loss')
+    train_acc_metric = AccumulatedBinaryAccuracyMetric('acc')
+    evaluate_acc_metric = AccumulatedEmbeddingAccuracyMetric('evaluate')
+
 
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
     lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
     checkpoint_save_path = './save_model'
     checkpoint = Checkpint(checkpoint_save_path)
 
-    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=metrics)
+    trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[loss_metric, train_acc_metric])
+    trainer.set_metrics(validate_metrics=[evaluate_acc_metric])
     trainer.start(epoch_size=2, checkpoint=checkpoint)
 
     #  >>> TODO: 看官方文档：https://www.tensorflow.org/guide/keras#weights_only
@@ -581,7 +580,7 @@ if __name__ == '__main__':  # SiameseBinClassifyNet
     print('debug')
 
 
-if __name__ == '__main__test':  # SiameseBinClassifyNet
+if __name__ == '__main__1':  # SiameseBinClassifyNet
     train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
     num_class = len(set(train_images_label))
     batch_size = 100
@@ -597,7 +596,7 @@ if __name__ == '__main__test':  # SiameseBinClassifyNet
         tf.keras.layers.Dense(10)
     ])
     emb = model.output
-    # model = SiameseBinClassifyNet(model)
+    model = SiameseBinClassifyNet(model)
 
     optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
 
@@ -714,7 +713,3 @@ https://zhuanlan.zhihu.com/p/66648325
 https://tf.wiki/zh/basic/models.html
 https://www.zybuluo.com/Team/note/1491361
 """
-
-
-
-把SiameseBinClassifyNet拆分成SiameseNet和BinClassifyNet

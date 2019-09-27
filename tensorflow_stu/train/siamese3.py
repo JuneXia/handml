@@ -128,6 +128,9 @@ class SiameseNet(tf.keras.Model):
         super(SiameseNet, self).__init__()
         self.embedding_net = embedding_net
 
+    def build(self, input_shape):
+        print(input_shape)
+
     def call(self, inputs, **kwargs):
         emb1 = self.embedding_net(inputs[0])
         emb2 = self.embedding_net(inputs[1])
@@ -201,6 +204,9 @@ class ContrastiveBinClassifyNet(tf.keras.Model):
         super(ContrastiveBinClassifyNet, self).__init__()
         self.L1_layer = tf.keras.layers.Lambda(lambda tensors: tf.abs(tensors[0] - tensors[1]))
         self.fc1 = tf.keras.layers.Dense(1, activation='sigmoid')
+
+    def build(self, input_shape):
+        print(input_shape)
 
     def call(self, inputs, training=None, mask=None):
         emb1, emb2 = inputs
@@ -313,14 +319,16 @@ class AccumulatedEmbeddingAccuracyMetric(tf.keras.layers.Layer):
                                                                                   subtract_mean=True)
         auc = tools.compute_auc(fpr, tpr)
 
+        '''
         val = '%.4f±%.3f' % (val, val_std)
         acc = '%.4f±%.3f' % (accuracy.mean(), accuracy.std())
         auc = '%.4f' % auc
         far = '%.4f' % far
 
         print('acc:{}, auc={}, val:{}@far:{}'.format(acc, auc, val, far))
+        '''
 
-        return None
+        return accuracy.mean(), accuracy.std(), auc, val, val_std, far
 
     def name(self):
         return self.name
@@ -330,19 +338,6 @@ class AccumulatedEmbeddingAccuracyMetric(tf.keras.layers.Layer):
 
     def reset_states(self):
         pass
-        #self.metric_acc.reset_states()
-
-
-class OneShotNet(tf.keras.layers.Layer):
-    def __init__(self, embedding_net):
-        super(OneShotNet, self).__init__()
-        self.embedding_net = embedding_net
-        self.L1 = tf.keras.regularizers.l1()
-
-    def call(self, inputs, **kwargs):
-        l1_dist = tf.abs(inputs[0]-inputs[1])
-
-        print('debug')
 
 
 class Checkpint(tf.keras.callbacks.Callback):
@@ -378,7 +373,7 @@ def SaveCheckpoint(model, save_path, global_step):
 
     # 发现模型恢复时，不能获取动态图的变量，可能需要在模型__init__中add_variable或者add_weights
 
-    # model.save_weights(checkpoint_path)  # ok, 这个应该是只能保存最后一次weights
+    model.save_weights(checkpoint_path)  # ok, 这个应该是只能保存最后一次weights
     # model.save(os.path.join('./save_model', 'mymodel.h5'))  # failed
 
     # tensorflow 2.0适用
@@ -413,7 +408,7 @@ class Train(object):
 
         if train_dataset is not None:
             current_time = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-            train_log_dir = os.path.join(project_path, 'logs', current_time)
+            train_log_dir = os.path.join(project_path, 'train/logs', current_time)
             # summary_writer 一定要写成成员变量，因为这会常住内存，否则会报错。
             self.summary_writer = tf.contrib.summary.create_file_writer(train_log_dir, flush_millis=1000)
             self.global_step = tf.train.get_or_create_global_step()
@@ -453,14 +448,17 @@ class Train(object):
             grads = t.gradient(loss_step, self.model.trainable_variables)
             self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
-            print('Training: global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
-                                                                        self.epoch_size,
-                                                                        batch), end=' ')
             for metric in self.metrics:
                 rslt = metric(labels, outputs, loss_step)
                 tf.contrib.summary.scalar('train_' + metric.name(), rslt)
-                print(metric.name(), rslt.numpy(), end=' ')
-            print('')
+
+            if batch % 10 == 0:
+                print('Training: global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
+                                                                                      self.epoch_size,
+                                                                                      batch), end=' ')
+                for metric in self.metrics:
+                    print(metric.name(), metric.result().numpy(), end=' ')
+                print('')
 
     def validation(self):
         for metric in self.metrics:
@@ -473,11 +471,12 @@ class Train(object):
 
             for metric in self.metrics:
                 rslt = metric(labels, outputs, loss_step)
-                tf.contrib.summary.scalar('validate_' + metric.name(), rslt)
+                # tf.contrib.summary.scalar('validate_' + metric.name(), rslt)
 
         print('Validate: ', end=' ')
         for metric in self.metrics:
             print(metric.name(), metric.result().numpy(), end=' ')
+            tf.contrib.summary.scalar('validate_' + metric.name(), rslt)
         print('')
 
     def evaluate(self):
@@ -506,10 +505,20 @@ class Train(object):
 
         for metric in self.validate_metrics:
             rslt = metric(emb_labels, (embeddings1, embeddings2), losses)
-            if rslt is None:
-                continue
-            tf.contrib.summary.scalar('evaluate_' + metric.name(), rslt)
-            print(metric.name(), rslt.numpy(), end=' ')
+            acc, acc_std, auc, val, val_std, far = rslt
+            tf.contrib.summary.scalar('evaluate_acc', acc)
+            tf.contrib.summary.scalar('evaluate_accstd', acc_std)
+            tf.contrib.summary.scalar('evaluate_auc', auc)
+            tf.contrib.summary.scalar('evaluate_val', val)
+            tf.contrib.summary.scalar('evaluate_valstd', val_std)
+            tf.contrib.summary.scalar('evaluate_far', far)
+
+            val = '%.4f±%.3f' % (val, val_std)
+            acc = '%.4f±%.3f' % (acc, acc_std)
+            auc = '%.4f' % auc
+            far = '%.4f' % far
+
+            print('Evaluate: acc:{}, auc={}, val:{}@far:{}'.format(acc, auc, val, far), end=' ')
         print('')
 
 
@@ -541,7 +550,35 @@ def projector_embedding():
     pass
 
 
-if __name__ == '__main__':  # ContrastiveBinClassifyNet_SiameseNet_train
+def create_model(just_embedding=False):
+    # create embedding_net
+    model = tf.keras.Sequential([
+        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
+        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
+        tf.keras.layers.GlobalMaxPool2D(),
+        tf.keras.layers.Dense(32)
+    ])
+
+    if not just_embedding:
+        # 思路1：ok
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        model = tf.keras.Sequential([
+            SiameseNet(model),
+            ContrastiveBinClassifyNet()
+        ])
+        data = np.ones((10,) + (28, 28, 1), dtype=np.float32)
+        model((data, data))
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+        # 思路2：ok
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+        # model = SiameseBinClassifyNet(model)
+        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+    return model
+
+
+if __name__ == '__main__1':  # train, validation, evaluate
     train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, validation_ratio=0.2)
     num_class = len(set(train_images_label))
     batch_size = 100
@@ -550,45 +587,69 @@ if __name__ == '__main__':  # ContrastiveBinClassifyNet_SiameseNet_train
     train_dataset = datset.DataIterator(train_dataset, batch_size=batch_size)
     validation_dataset = datset.DataIterator(validation_dataset, batch_size=batch_size)
 
-    embedding_net = tf.keras.Sequential([
-            tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, 1)),
-            tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-            tf.keras.layers.GlobalMaxPool2D(),
-            tf.keras.layers.Dense(32)
-        ])
-    model = tf.keras.Sequential([
-        SiameseNet(embedding_net),
-        ContrastiveBinClassifyNet()
-    ])
+    model = create_model()
 
     # optimizer = tf.keras.optimizers.Adam()
     optimizer = tf.train.AdamOptimizer(learning_rate=0.01)
 
-    # loss_func = tf.keras.losses.CategoricalCrossentropy(from_logits=True)
-    # loss_func = ContrastiveLoss()
-    # loss_func = tf.keras.losses.BinaryCrossentropy(from_logits=True)
     loss_func = ComplexLoss()
 
-    # metric_train_acc = AccumulatedEmbeddingAccuracyMetric(tf.keras.metrics.BinaryAccuracy('bin_acc'))
-    # metrics = [AccumulatedLossMetric('loss'), metric_train_acc]
-
     loss_metric = AccumulatedLossMetric('loss')
-    train_acc_metric = AccumulatedBinaryAccuracyMetric('train_acc')
-    evaluate_acc_metric = AccumulatedEmbeddingAccuracyMetric('evaluate_acc')
+    train_acc_metric = AccumulatedBinaryAccuracyMetric('acc')
+    evaluate_acc_metric = AccumulatedEmbeddingAccuracyMetric('evaluate')
 
     # tensorboard_callback = tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1)
-    lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
+    # lr_callback = tf.keras.callbacks.LearningRateScheduler(learning_rate_sche)
     checkpoint_save_path = './save_model'
-    checkpoint = Checkpint(checkpoint_save_path)
 
     trainer = Train(model, loss_func, train_dataset, validation_dataset, optimizer, metrics=[loss_metric, train_acc_metric])
     trainer.set_metrics(validate_metrics=[evaluate_acc_metric])
-    trainer.start(epoch_size=100, checkpoint=checkpoint)
+    if False:
+        checkpoint = Checkpint(checkpoint_save_path)
+        trainer.start(epoch_size=500, checkpoint=checkpoint)
+    elif False:
+        RestoreCheckpoint(model, checkpoint_save_path)
+
+        trainer.validation()
+        trainer.evaluate()
 
     #  >>> TODO: 看官方文档：https://www.tensorflow.org/guide/keras#weights_only
     ## TODO: 研究下 tf.train.CheckpointManager()
     print('debug')
 
+
+if __name__ == '__main__':  # plot embedding
+    validation_images_path, validation_images_label = datset.load_dataset(g_datapath, max_nrof_cls=100)
+
+    batch_size = 100
+    buffer_size = 1000
+    repeat = 1
+
+    filenames = tf.constant(validation_images_path)
+    labels = tf.constant(validation_images_label)
+    dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+    dataset = dataset.map(datset._parse_function)
+    dataset = dataset.shuffle(buffer_size=buffer_size, seed=tf.set_random_seed(666),
+                              reshuffle_each_iteration=True).batch(batch_size).repeat(1)
+    model = create_model()
+
+    model_path = './save_model'
+    RestoreCheckpoint(model, model_path)
+
+    embeddings = []
+    emb_labels = []
+    for (batch, (images, labels)) in enumerate(dataset):
+        print(batch, images.shape, labels.shape)
+        embs = model(images)
+        embeddings.extend(embs.numpy())
+        emb_labels.extend(labels.numpy())
+    embeddings = np.array(embeddings)
+    emb_labels = np.array(emb_labels)
+
+    result = tools.dim_reduct(embeddings)
+
+    print('plot_embedding')
+    tools.plot_embedding(data=result, label=emb_labels, title='t-SNE embedding')
 
 """
 reference:
