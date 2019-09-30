@@ -29,10 +29,8 @@ if user_name in ['xiajun']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 elif user_name in ['yp']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44_front999')
-elif user_name in ['xiaj'] and host_name in ['ubuntu']:
+elif user_name in ['xiaj']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
-elif user_name in ['xiaj'] and host_name in ['ubuntu-pc']:
-    g_datapath = os.path.join(home_path, 'res/mnist')
 else:
     print('unkown user_name:{}'.format(user_name))
     exit(0)
@@ -128,8 +126,8 @@ def sequential_model(conv_base, weight_decay, bottleneck_layer_size, n_classes):
     return model
 
 
-def functional_model(conv_base, input_shape, weight_decay, bottleneck_layer_size, n_classes):
-    iminputs = tf.keras.Input(shape=input_shape, name='input')
+def functional_model(conv_base, weight_decay, bottleneck_layer_size, n_classes):
+    iminputs = tf.keras.Input(shape=(160, 160, 3), name='input')
     model = conv_base(iminputs)
     model = tf.keras.layers.Dropout(0.4, seed=666)(model)
 
@@ -147,10 +145,10 @@ def functional_model(conv_base, input_shape, weight_decay, bottleneck_layer_size
     return model
 
 
-def custom_model(n_classes, input_shape=(28, 28, 1)):
-    conv_base = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=input_shape, pooling='avg')
-    # conv_base = tf.keras.applications.Xception(weights='imagenet', include_top=False, input_shape=input_shape, pooling='avg')
-    # conv_base = tf.keras.applications.InceptionResNetV2(weights='imagenet', include_top=False, input_shape=input_shape, pooling='avg')
+def custom_model(n_classes):
+    # conv_base = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
+    # conv_base = tf.keras.applications.Xception(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
+    conv_base = tf.keras.applications.InceptionResNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
     conv_base.trainable = True
     # conv_base.summary()
     #for layer in conv_base.layers[:-4]:
@@ -164,7 +162,7 @@ def custom_model(n_classes, input_shape=(28, 28, 1)):
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    model = functional_model(conv_base, input_shape, weight_decay, bottleneck_layer_size, n_classes)  # OK
+    model = functional_model(conv_base, weight_decay, bottleneck_layer_size, n_classes)  # OK
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     return model
@@ -228,141 +226,14 @@ class TrainReports(object):
                     f.write('%s: %s\n' % (key, str(value)))
 
 
-def toy_model(input_shape=(28, 28, 1)):
-    model = tf.keras.Sequential([
-        tf.keras.layers.Conv2D(16, [3, 3], activation='relu', input_shape=(None, None, input_shape[2])),
-        tf.keras.layers.Conv2D(32, [3, 3], activation='relu'),
-        tf.keras.layers.GlobalMaxPool2D(),
-        tf.keras.layers.Dense(32)
-    ])
-
-    return model
-
-
-class Trainer(object):
-    def __init__(self):
-        self.params = {}
-
-    def load_dataset(self, data_path, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.05):
-        train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(
-            data_path, min_nrof_cls=min_nrof_cls, max_nrof_cls=max_nrof_cls, validation_ratio=validation_ratio)
-        num_train_images = len(train_images_path)
-        num_validation_images = len(validation_images_path)
-        num_classes = len(set(train_images_label))
-
-        self.params['train_images_path'] = train_images_path
-        self.params['train_images_label'] = train_images_label
-        self.params['validation_images_path'] = validation_images_path
-        self.params['validation_images_label'] = validation_images_label
-        self.params['num_train_images'] = num_train_images
-        self.params['num_validation_images'] = num_validation_images
-        self.params['num_classes'] = num_classes
-
-    def set_train_params(self, imshape=(160, 160, 3), batch_size=96, max_epochs=1):
-        self.params['max_epochs'] = max_epochs
-        self.params['imshape'] = imshape
-        self.params['batch_size'] = batch_size
-        self.params['max_epochs'] = max_epochs
-        self.params['train_steps_per_epoch'] = tools.steps_per_epoch(self.params['num_train_images'], batch_size, allow_less_batsize=False)
-        self.params['validation_steps_per_epoch'] = tools.steps_per_epoch(self.params['num_validation_images'], batch_size, allow_less_batsize=False)
-        print('train_steps_per_epoch={}'.format(self.params['train_steps_per_epoch']))
-        print('validation_steps_per_epoch={}'.format(self.params['validation_steps_per_epoch']))
-
-        '''
-        train_reports.add_record('num_classes', num_classes)
-        train_reports.add_record('batch_size', batch_size)
-        train_reports.add_record('initial_epochs', initial_epochs)
-        train_reports.add_record('train_steps_per_epoch', train_steps_per_epoch)
-        train_reports.add_record('validation_steps_per_epoch', validation_steps_per_epoch)
-        train_reports.add_record('imshape', (160, 160, 3))
-        '''
-
-        imparse = datset.ImageParse(imshape=imshape)
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        filenames = tf.constant(self.params['train_images_path'])
-        labels = tf.constant(self.params['train_images_label'])
-        train_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-        train_dataset = train_dataset.map(imparse.train_parse_func)
-        self.train_dataset = train_dataset.shuffle(buffer_size=min(self.params['num_train_images'], 1000),
-                                              seed=tf.compat.v1.set_random_seed(666),
-                                              reshuffle_each_iteration=True).batch(batch_size).repeat()  # repeat 不指定参数表示允许无穷迭代
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        filenames = tf.constant(self.params['validation_images_path'])
-        labels = tf.constant(self.params['validation_images_label'])
-        validation_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-        validation_dataset = validation_dataset.map(imparse.validation_parse_func)
-        self.validation_dataset = validation_dataset.shuffle(buffer_size=min(self.params['num_validation_images'], 1000),
-                                                        seed=tf.compat.v1.set_random_seed(666),
-                                                        reshuffle_each_iteration=True).batch(batch_size).repeat()
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-    def set_model(self, conv_base=''):
-        if conv_base == 'MobileNetV2':
-            conv_base_model = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=self.params['imshape'], pooling='avg')
-        elif conv_base == 'Xception':
-            conv_base_model = tf.keras.applications.Xception(weights='imagenet', include_top=False, input_shape=self.params['imshape'], pooling='avg')
-        elif conv_base == 'InceptionResnetV2':
-            conv_base_model = tf.keras.applications.InceptionResNetV2(weights='imagenet', include_top=False, input_shape=self.params['imshape'], pooling='avg')
-        else:
-            conv_base_model = toy_model(self.params['imshape'])
-        conv_base_model.trainable = True
-        # conv_base_model.summary()
-        # for layer in conv_base_model.layers[:-4]:
-        #    layer.trainable = False
-
-        bottleneck_layer_size = 512
-        weight_decay = 5e-4
-
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        # model = sequential_model(conv_base_model, self.params['imshape'], weight_decay, bottleneck_layer_size, self.params['num_classes'])  # OK
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        self.model = functional_model(conv_base_model, self.params['imshape'], weight_decay, bottleneck_layer_size, self.params['num_classes'])  # OK
-        # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-        self.optimizer = tf.keras.optimizers.Adam(lr=0.001)
-
-    def set_record(self):
-        log_dir = os.path.join('logs', tools.get_strtime() + '-n_cls:' + str(self.params['num_classes']))
-        self.callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler_experiment, verbose=1),
-                          tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1),
-                          ]
-
-    def set_loss_metric(self):
-        self.model.compile(optimizer=self.optimizer,
-                           loss=[prelogits_norm_loss, 'sparse_categorical_crossentropy'],
-                           metrics=[[], 'accuracy'])
-
-    def fit(self):
-        history = self.model.fit(self.train_dataset,
-                            steps_per_epoch=self.params['train_steps_per_epoch'],
-                            epochs=self.params['max_epochs'],
-                            validation_data=self.validation_dataset,
-                            validation_steps=self.params['validation_steps_per_epoch'],
-                            callbacks=self.callbacks,
-                            # workers=4,
-                            # use_multiprocessing=True
-                            )
-
-
 if __name__ == '__main__':
     train_reports = TrainReports()
-    trainer = Trainer()
-    trainer.load_dataset(g_datapath)
-    trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=5)
-    trainer.set_model()
-    trainer.set_loss_metric()
-    trainer.set_record()
-    trainer.fit()
 
+    train_images_path, train_images_label, validation_images_path, validation_images_label = datset.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=40000, validation_ratio=0.05)
 
-    """
     train_count = len(train_images_path)
     validation_count = len(validation_images_path)
-    num_classes = len(set(train_images_label))
+    n_classes = len(set(train_images_label))
     batch_size = 96
     initial_epochs = 5
     train_steps_per_epoch = tools.steps_per_epoch(train_count, batch_size, allow_less_batsize=False)
@@ -370,7 +241,7 @@ if __name__ == '__main__':
     print('train_steps_per_epoch={}'.format(train_steps_per_epoch))
     print('validation_steps_per_epoch={}'.format(validation_steps_per_epoch))
 
-    train_reports.add_record('num_classes', num_classes)
+    train_reports.add_record('n_classes', n_classes)
     train_reports.add_record('batch_size', batch_size)
     train_reports.add_record('initial_epochs', initial_epochs)
     train_reports.add_record('train_steps_per_epoch', train_steps_per_epoch)
@@ -397,14 +268,14 @@ if __name__ == '__main__':
     validation_dataset = validation_dataset.shuffle(buffer_size=min(validation_count, 10000), seed=tf.compat.v1.set_random_seed(666),
                                           reshuffle_each_iteration=True).batch(batch_size).repeat()
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-    
-    model = custom_model(num_classes)
-    # model = CustomModel(num_classes)
-    
+
+    model = custom_model(n_classes)
+    # model = CustomModel(n_classes)
+
     train_reports.malloc_record('Model')
     model.summary(print_fn=train_reports.record_cb)
 
-    log_dir = os.path.join('logs', tools.get_strtime() + '-n_cls:' + str(num_classes))
+    log_dir = os.path.join('logs', tools.get_strtime() + '-n_cls:' + str(n_classes))
     callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler_experiment, verbose=1),
                  tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1),
                  ]
@@ -425,7 +296,6 @@ if __name__ == '__main__':
 
     train_reports.save_record(os.path.join(log_dir, 'train_reports.txt'))
     exit(0)
-    """
 
 
     print('finetune ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~')
@@ -439,7 +309,7 @@ if __name__ == '__main__':
     model.compile(optimizer=optimizer, loss=[prelogits_norm_loss, 'sparse_categorical_crossentropy'],
                   metrics=[[], 'accuracy'])
 
-    log_dir = os.path.join('logs', tools.get_strtime() + '-Finetune' + '-n_cls:' + str(num_classes))
+    log_dir = os.path.join('logs', tools.get_strtime() + '-Finetune' + '-n_cls:' + str(n_classes))
     callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler_experiment, verbose=1),
                  tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1),
                  ]
@@ -466,7 +336,7 @@ if __name__ == '__main__':
     model.compile(optimizer=optimizer, loss=[prelogits_norm_loss, 'sparse_categorical_crossentropy'],
                   metrics=[[], 'accuracy'])
 
-    log_dir = os.path.join('logs', tools.get_strtime() + '-Finetune' + '-n_cls:' + str(num_classes))
+    log_dir = os.path.join('logs', tools.get_strtime() + '-Finetune' + '-n_cls:' + str(n_classes))
     callbacks = [tf.keras.callbacks.LearningRateScheduler(scheduler, verbose=1),
                  tf.keras.callbacks.TensorBoard(log_dir, histogram_freq=1),
                  ]
