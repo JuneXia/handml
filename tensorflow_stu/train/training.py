@@ -18,8 +18,6 @@ from six import iteritems
 import socket
 import getpass
 
-
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 home_path = os.environ['HOME']
 
 user_name = getpass.getuser()
@@ -28,8 +26,10 @@ host_name = socket.gethostname()
 if user_name in ['xiajun']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 elif user_name in ['yp']:
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44_front999')
 elif user_name in ['xiaj'] and host_name in ['ailab-server']:
+    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 elif user_name in ['xiaj'] and host_name in ['ubuntu-pc']:
     g_datapath = os.path.join(home_path, 'res/mnist')
@@ -38,7 +38,7 @@ else:
     exit(0)
 
 
-gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.8)  # local 0.333
+gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=1)  # local 0.333
 config = tf.compat.v1.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True, log_device_placement=False)
 config.gpu_options.allow_growth = True
 
@@ -279,7 +279,11 @@ class Trainer(object):
         self.params['imshape'] = imshape
         self.params['batch_size'] = batch_size
         self.params['max_epochs'] = max_epochs
-        self.params['train_steps_per_epoch'] = tools.steps_per_epoch(self.params['num_train_images'], batch_size, allow_less_batsize=False)
+        if user_name in ['xiaj'] and host_name in ['ailab-server']:
+            # TODO: ailab训练速度慢，而且facenet源码epoch_size也是等于1000，故这里暂且用1000吧。
+            self.params['train_steps_per_epoch'] = 1000
+        else:
+            self.params['train_steps_per_epoch'] = tools.steps_per_epoch(self.params['num_train_images'], batch_size, allow_less_batsize=False)
         self.params['validation_steps_per_epoch'] = tools.steps_per_epoch(self.params['num_validation_images'], batch_size, allow_less_batsize=False)
         print('train_steps_per_epoch={}'.format(self.params['train_steps_per_epoch']))
         print('validation_steps_per_epoch={}'.format(self.params['validation_steps_per_epoch']))
@@ -379,14 +383,14 @@ class Trainer(object):
             layer.trainable = False
 
 
-if __name__ == '__main__1':
+if __name__ == '__main__':
     reporter = Reporter()
     trainer = Trainer()
     trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.02)
     # trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.1)
     # trainer.set_train_params(imshape=(28, 28, 1), batch_size=96, max_epochs=2)
     trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=276)
-    trainer.set_model()  # InceptionResnetV2, MobileNetV2
+    trainer.set_model('InceptionResnetV2')  # InceptionResnetV2, MobileNetV2
     trainer.set_loss_metric(losses=[prelogits_norm_loss, 'sparse_categorical_crossentropy'], metrics=[[], 'accuracy'])
     trainer.set_record()
     reporter.add_records(trainer.get_params())
@@ -405,80 +409,39 @@ if __name__ == '__main__2':
     print(a)
 
 
-# TODO: 拿到 dataset.py 中去
-def dup_sampling(images_info, label_axis=0, dup2size=10):
-    """
-    有的时候为了样本均衡，需要对样本量较少的类别进行重复采样。
-    注意：按照本函数思路，仅仅是对原样本进行copy来重复采样。所以在训练之前还应当做数据增强。
-    :param images_info:
-    :param label_axis: 指定images_info中的哪一列是类别标签信息。
-    :return:
-    """
-    extend_images_info = []
-    cls_names = set(images_info[:, label_axis])
-    for cls in cls_names:
-        info = images_info[np.where(images_info[:, label_axis] == cls)]
-        if len(info) < dup2size:
-            info = np.random.shuffle(info)
-            extend_info = info[0:dup2size - len(info)]
-            info = np.concatenate(info, extend_info)
+def dup_sampling_check(info):
+    if len(info) > 200:
+        return False
 
-        extend_images_info.extend(info)
-    images_info = np.array(extend_images_info)
+    marks = ['happyjuzi_mainland', 'happyjuzi_HongkongTaiwan']
+    # samples_info = []
+    for dat in info:
+        if 'VGGFace2' in dat[-1]:
+            # 不对VGGFace2数据集进行重复抽样
+            return False
 
-    return images_info
-
-
-# TODO: 拿到 dataset.py 中去
-def load_dataset2(root_path, images, label_names):
-    images_info = []
-    imexist_count = 0
-    imexts = ['jpg', 'png']
-    for i, (image, label_name) in enumerate(zip(images, label_names)):
-        imname, imext = image.rsplit('.', maxsplit=1)
-        if imext not in imexts:
-            raise Exception('Only support [jpg, png] currently!')
-
-        imexist = False
-        for ext in imexts:
-            image_path = os.path.join(root_path, imname) + '.' + ext
-            if os.path.exists(image_path):
-                image_info = [label_name, image_path]
-                images_info.append(image_info)
-                imexist = True
+        findit = False
+        for mark in marks:
+            if mark in dat[-1]:
+                findit = True
+                # samples_info.append(dat)
                 break
-        if not imexist:
-            imexist_count -= 1
-            print('\t{}/{}.{} is not exist!'.format(root_path, imname, imexts))
+        if not findit:
+            raise Exception('Only support dataset: {}'.format(marks))
 
-        tools.view_bar('loading: ', i + 1, len(images))
-    print('')
-
-    images_info = np.array(images_info)
-
-    print('\n***********************************************')
-    print('From {}, not existed images count: {}'.format(root_path, abs(imexist_count)))
-    print('***********************************************\n')
-
-    return images_info
+    # samples_info = np.array(samples_info)
+    # return samples_info
+    return True
 
 
-if __name__ == '__main__':
-    # root_path = '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning'
-    # csv_file = '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned.csv'
-    # images_info = tools.load_csv(csv_file, start_idx=1)
-    # images_path = [os.path.join(info[0], info[2]) for info in images_info]
-    # images_info = load_dataset2(root_path, images_path, images_info[:, 1])
+if __name__ == '__main__3':  # 加载facenet训练所需要的数据集
+    train_dataset = [{'root_path': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44',
+                      'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland.csv'},
+                     {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning',
+                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned.csv'},
+                     ]
 
-    root_path = '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44'
-    csv_file = '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland.csv'
-    images_info = tools.load_csv(csv_file, start_idx=1)
-    images_path = [os.path.join(info[0], info[2]) for info in images_info]
-    images_info = load_dataset2(root_path, images_path, images_info[:, 1])
-    images_info = dup_sampling(images_info, dup2size=400)
-    print('debug')
-
-
->>> 数据重复抽样代码写完了，但还没测试
+    # datset.make_feedata(train_dataset, 'tmp2.csv', title_line='train_val,label,person_name,image_path\n', filter_cb=dup_sampling_check)
+    datset.load_feedata('tmp2.csv')
 
 
