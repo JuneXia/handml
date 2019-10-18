@@ -14,7 +14,7 @@ class Human(Base):
         print(args)
 
 
-if __name__ == '__main__':
+if __name__ == '__main__1':  # 类的继承实验
     person = Human()
     person()
 

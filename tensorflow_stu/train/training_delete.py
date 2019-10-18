@@ -19,7 +19,6 @@ import socket
 import getpass
 
 
-os.environ['CUDA_VISIBLE_DEVICES'] = '0'
 home_path = os.environ['HOME']
 
 user_name = getpass.getuser()
@@ -30,6 +29,7 @@ if user_name in ['xiajun']:
 elif user_name in ['yp']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44_front999')
 elif user_name in ['xiaj']:
+    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 else:
     print('unkown user_name:{}'.format(user_name))
@@ -146,9 +146,9 @@ def functional_model(conv_base, weight_decay, bottleneck_layer_size, n_classes):
 
 
 def custom_model(n_classes):
-    # conv_base = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
+    conv_base = tf.keras.applications.MobileNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
     # conv_base = tf.keras.applications.Xception(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
-    conv_base = tf.keras.applications.InceptionResNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
+    # conv_base = tf.keras.applications.InceptionResNetV2(weights='imagenet', include_top=False, input_shape=(160, 160, 3), pooling='avg')
     conv_base.trainable = True
     # conv_base.summary()
     #for layer in conv_base.layers[:-4]:
@@ -255,7 +255,7 @@ if __name__ == '__main__':
     labels = tf.constant(train_images_label)
     train_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
     train_dataset = train_dataset.map(imparse.train_parse_func)
-    train_dataset = train_dataset.shuffle(buffer_size=min(train_count, 10000), seed=tf.compat.v1.set_random_seed(666),
+    train_dataset = train_dataset.shuffle(buffer_size=min(train_count, 1000), seed=tf.compat.v1.set_random_seed(666),
                               reshuffle_each_iteration=True).batch(batch_size).repeat()  # repeat 不指定参数表示允许无穷迭代
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -265,7 +265,7 @@ if __name__ == '__main__':
     labels = tf.constant(validation_images_label)
     validation_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
     validation_dataset = validation_dataset.map(imparse.validation_parse_func)
-    validation_dataset = validation_dataset.shuffle(buffer_size=min(validation_count, 10000), seed=tf.compat.v1.set_random_seed(666),
+    validation_dataset = validation_dataset.shuffle(buffer_size=min(validation_count, 1000), seed=tf.compat.v1.set_random_seed(666),
                                           reshuffle_each_iteration=True).batch(batch_size).repeat()
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 

@@ -16,6 +16,8 @@ from utils import tools
 import numpy as np
 from six import iteritems
 
+from losses import loss
+
 import socket
 import getpass
 
@@ -27,7 +29,7 @@ host_name = socket.gethostname()
 if user_name in ['xiajun', 'yp']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 elif user_name in ['xiaj'] and host_name in ['ailab-server']:
-    os.environ['CUDA_VISIBLE_DEVICES'] = '2'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
     # g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
     g_datapath = '/disk2/res/VGGFace2/Experiment/mtcnn_align182x182_margin44'
 elif user_name in ['xiaj'] and host_name in ['ubuntu-pc']:
@@ -39,8 +41,9 @@ else:
 gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=1)  # local 0.333
 config = tf.compat.v1.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True, log_device_placement=False)
 config.gpu_options.allow_growth = True
-tf.compat.v1.enable_eager_execution(config=config, execution_mode=tf.contrib.eager.SYNC)
+tf.compat.v1.enable_eager_execution(config=config)
 print('is eager executing: ', tf.compat.v1.executing_eagerly())
+
 
 
 class PrelogitsNormLoss(losses.Loss):
@@ -329,7 +332,7 @@ class Trainer(object):
         train_dataset = train_dataset.map(imparse.train_parse_func)
         self.train_dataset = train_dataset.shuffle(buffer_size=min(self.params['num_train_images'], 1000),
                                               seed=tf.compat.v1.set_random_seed(666),
-                                              reshuffle_each_iteration=True).batch(batch_size).repeat().prefetch(buffer_size=-1)  # repeat 不指定参数表示允许无穷迭代
+                                              reshuffle_each_iteration=True).batch(batch_size).repeat(1).prefetch(buffer_size=-1)  # repeat 不指定参数表示允许无穷迭代
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -339,7 +342,7 @@ class Trainer(object):
         validation_dataset = validation_dataset.map(imparse.validation_parse_func)
         self.validation_dataset = validation_dataset.shuffle(buffer_size=min(self.params['num_validation_images'], 1000),
                                                         seed=tf.compat.v1.set_random_seed(666),
-                                                        reshuffle_each_iteration=True).batch(batch_size).repeat().prefetch(buffer_size=-1)
+                                                        reshuffle_each_iteration=True).batch(batch_size).repeat(1).prefetch(buffer_size=-1)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     def set_model(self, conv_base='toy_model', custom_model=False):
@@ -382,7 +385,29 @@ class Trainer(object):
                           # tf.keras.callbacks.ModelCheckpoint(self.model_ckpt_dir, verbose=1, save_best_only=True, save_freq=2)  # save_freq>1时 运行时会崩溃。
                           ]
 
+    def set_loss(self):
+        # self.loss_func = tf.keras.losses.SparseCategoricalCrossentropy()
+        # self.loss_func = tf.keras.losses.CategoricalCrossentropy()
+        # self.loss_func = loss.ComplexLoss2()
+        self.cross_loss_func = tf.keras.losses.CategoricalCrossentropy()
+        self.prelogits_loss_func = PrelogitsNormLoss()
+
+    def set_metric(self):
+        # self.metric_func = tf.keras.metrics.SparseCategoricalAccuracy()
+        self.metric_func = tf.keras.metrics.CategoricalAccuracy()
+
+    def set_optimizer(self):
+        learning_rate = 0.01
+        # learning_rate = tf.train.exponential_decay(0.01, global_step=self.global_step, decay_steps=2, decay_rate=0.03)
+        self.optimizer = tf.keras.optimizers.Adam(lr=0.001)
+        # self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
+
+    def compile(self, optimizer, loss, metrics):
+        pass
+
     def set_loss_metric(self, losses=[], metrics=[]):
+        raise Exception('使用set_loss、set_metric、set_optimizer代替')
+
         self.optimizer = tf.keras.optimizers.Adam(lr=0.001)
         self.model.compile(optimizer=self.optimizer,
                            loss=losses,
@@ -404,14 +429,51 @@ class Trainer(object):
                             )
 
     def custom_fit(self):
-        for batch, (images, labels) in enumerate(self.train_dataset):
-            # self.global_step.assign_add(1)
-            with tf.GradientTape() as t:
-                outputs = self.model(images)
-                if type(outputs) != np.ndarray:
-                    outputs = outputs.numpy()
-                labels = labels.reshape((-1, 1))
-                loss_step = self.loss_func(labels, outputs)
+        epoches = 300
+        for epoch in range(epoches):
+            # for metric in self.metrics:
+            #     metric.reset_states()
+            for step, (images, labels) in enumerate(self.train_dataset):
+                # self.global_step.assign_add(1)
+                # labels = tf.one_hot(labels, self.params['num_classes'])
+                with tf.GradientTape() as t:
+                    outputs = self.model(images)
+                    # if type(outputs) != np.ndarray:
+                    #     outputs = outputs.numpy()
+                    # labels = labels.reshape((-1, 1))
+                    step_crossloss = self.cross_loss_func(labels, outputs)
+                    step_logitloss = self.prelogits_loss_func(labels, outputs)
+                    step_loss = step_crossloss + step_logitloss
+
+                grads = t.gradient([step_loss, step_crossloss],
+                                   [self.model.trainable_variables[:-2], self.model.trainable_variables[-2:]])
+                self.optimizer.apply_gradients(zip(grads[0], self.model.trainable_variables[:-2]))
+                self.optimizer.apply_gradients(zip(grads[1], self.model.trainable_variables[-2:]))
+
+                # grads = t.gradient(step_loss, self.model.trainable_variables)
+                # self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+
+                rslt = self.metric_func(labels, outputs)
+                # self.metric_func.result()
+                print('Training: global step: {}, crossloss: {}, logitsloss: {}, acc: {}'.format(step,
+                                                                                                 step_crossloss.numpy(),
+                                                                                                 step_logitloss.numpy(),
+                                                                                                 rslt.numpy()))
+
+                # for metric in self.metrics:
+                #     rslt = metric(labels, outputs, loss_step)
+                #     tf.contrib.summary.scalar('train_' + metric.name(), rslt)
+                #
+                # if step % 10 == 0:
+                #     print('Training: global step: {}, epoch: {}/{}, num_batch: {}'.format(self.global_step.numpy(), epoch,
+                #                                                                           self.epoch_size,
+                #                                                                           step), end=' ')
+                #     for metric in self.metrics:
+                #         print(metric.name(), metric.result().numpy(), end=' ')
+                #     print('')
+
+            if epoch == 2:
+                self.finetune()
 
     def save_model(self):
         # TODO: 临时写法
@@ -425,6 +487,7 @@ class Trainer(object):
 
     def finetune(self):
         conv_base_model = self.model.layers[1]
+        conv_base_model.trainable = True
         for layer in conv_base_model.layers[:-4]:
             layer.trainable = False
 
@@ -442,11 +505,13 @@ if __name__ == '__main__':
         trainer.set_loss_metric(losses=[prelogits_norm_loss, 'sparse_categorical_crossentropy'], metrics=[[], 'accuracy'])
     else:
         # trainer.set_loss_metric(losses=['sparse_categorical_crossentropy'], metrics=['accuracy'])
-        trainer.set_loss_metric(losses=['categorical_crossentropy'], metrics=['accuracy'])
+        trainer.set_loss()
+        trainer.set_metric()
+        trainer.set_optimizer()
     reporter.add_records(trainer.get_params())
 
-    trainer.fit()
-    # trainer.custom_fit()
+    trainer.custom_fit()
+    trainer.finetune()
     trainer.save_model()
     reporter.save_record(os.path.join(trainer.get_logdir(), 'params.txt'))
 
