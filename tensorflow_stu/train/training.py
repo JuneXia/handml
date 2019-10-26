@@ -353,7 +353,7 @@ class Trainer(object):
             self.model.build(input_shape=(None, imshape[0], imshape[1], imshape[2]))
         else:
             conv_base_model = get_conv_base_model(conv_base, self.params['imshape'])
-            conv_base_model.trainable = False
+            conv_base_model.trainable = True
 
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             # model = sequential_model(conv_base_model, self.params['imshape'], self.params['weight_decay'], self.params['bottleneck_size'], self.params['num_classes'])  # OK
@@ -436,7 +436,7 @@ if __name__ == '__main__':
     # trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.1)
     # trainer.set_train_params(imshape=(28, 28, 1), batch_size=96, max_epochs=2)
     trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=276)
-    trainer.set_model('MobileNetV2', custom_model=False)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
+    trainer.set_model('ResNet50', custom_model=False)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
     trainer.set_record()
     if datset.MULTI_OUTPUT:
         trainer.set_loss_metric(losses=[prelogits_norm_loss, 'sparse_categorical_crossentropy'], metrics=[[], 'accuracy'])

@@ -38,12 +38,11 @@ else:
     print('unkown user_name:{}'.format(user_name))
     exit(0)
 
-gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=1)  # local 0.333
+gpu_options = tf.compat.v1.GPUOptions(per_process_gpu_memory_fraction=0.8)  # local 0.333
 config = tf.compat.v1.ConfigProto(gpu_options=gpu_options, allow_soft_placement=True, log_device_placement=False)
 config.gpu_options.allow_growth = True
 tf.compat.v1.enable_eager_execution(config=config)
 print('is eager executing: ', tf.compat.v1.executing_eagerly())
-
 
 
 class PrelogitsNormLoss(losses.Loss):
@@ -59,6 +58,131 @@ class PrelogitsNormLoss(losses.Loss):
     def call(self, y_true, y_pred):
         prelogits_norm = tf.reduce_mean(tf.norm(tf.abs(y_pred) + self.eps, ord=self.prelogits_norm_p, axis=1))
         return prelogits_norm * self.prelogits_norm_loss_factor
+
+
+def focal_loss(weights=None, alpha=0.25, gamma=2, name='focal_loss'):
+    r"""Compute focal loss for predictions.
+        Multi-labels Focal loss formula:
+            FL = -alpha * (z-p)^gamma * log(p) -(1-alpha) * p^gamma * log(1-p)
+                 ,which alpha = 0.25, gamma = 2, p = sigmoid(x), z = target_tensor.
+    Args:
+     prediction_tensor: A float tensor of shape [batch_size, num_anchors,
+        num_classes] representing the predicted logits for each class
+     target_tensor: A float tensor of shape [batch_size, num_anchors,
+        num_classes] representing one-hot encoded classification targets
+     weights: A float tensor of shape [batch_size, num_anchors]
+     alpha: A scalar tensor for focal loss alpha hyper-parameter
+     gamma: A scalar tensor for focal loss gamma hyper-parameter
+    Returns:
+        loss: A (scalar) tensor representing the value of the loss function
+    """
+
+    def _focal_loss1(y_true, y_pred):
+        # sigmoid_p = tf.nn.sigmoid(prediction_tensor)
+        # zeros = array_ops.zeros_like(sigmoid_p, dtype=sigmoid_p.dtype)
+        #
+        # # For poitive prediction, only need consider front part loss, back part is 0;
+        # # target_tensor > zeros <=> z=1, so poitive coefficient = z - p.
+        # # target_tensor = tf.cast(target_tensor, dtype=tf.float32)
+        # target_tensor = tf.one_hot(target_tensor, depth=prediction_tensor.get_shape().as_list()[-1])
+        # pos_p_sub = array_ops.where(target_tensor > zeros, target_tensor - sigmoid_p, zeros)
+        #
+        # # For negative prediction, only need consider back part loss, front part is 0;
+        # # target_tensor > zeros <=> z=1, so negative coefficient = 0.
+        # neg_p_sub = array_ops.where(target_tensor > zeros, zeros, sigmoid_p)
+        # per_entry_cross_ent = - alpha * (pos_p_sub ** gamma) * tf.log(tf.clip_by_value(sigmoid_p, 1e-8, 1.0)) \
+        #                       - (1 - alpha) * (neg_p_sub ** gamma) * tf.log(tf.clip_by_value(1.0 - sigmoid_p, 1e-8, 1.0))
+
+        # y_true = tf.one_hot(y_true, depth=prediction_tensor.get_shape().as_list()[-1])
+        # cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+
+        # 从logits计算softmax
+        reduce_max = tf.reduce_max(y_pred, axis=1, keepdims=True)
+        y_pred = tf.nn.softmax(y_pred - reduce_max)
+
+        # 计算交叉熵
+        clip_preb = tf.clip_by_value(y_pred, 1e-10, 1.0)
+        cross_entropy = -tf.reduce_sum(y_true * tf.log(clip_preb), 1)
+
+        # 计算focal_loss
+        prob = tf.reduce_max(y_pred, axis=1)
+        weight = tf.pow(tf.subtract(1., prob), gamma)
+        fl = tf.multiply(tf.multiply(weight, cross_entropy), alpha)
+        loss = tf.reduce_sum(fl, name=name)
+
+        return loss
+
+
+    def _focal_loss(y_true, y_pred):
+        # sigmoid_p = tf.nn.sigmoid(prediction_tensor)
+        # zeros = array_ops.zeros_like(sigmoid_p, dtype=sigmoid_p.dtype)
+        #
+        # # For poitive prediction, only need consider front part loss, back part is 0;
+        # # target_tensor > zeros <=> z=1, so poitive coefficient = z - p.
+        # # target_tensor = tf.cast(target_tensor, dtype=tf.float32)
+        # target_tensor = tf.one_hot(target_tensor, depth=prediction_tensor.get_shape().as_list()[-1])
+        # pos_p_sub = array_ops.where(target_tensor > zeros, target_tensor - sigmoid_p, zeros)
+        #
+        # # For negative prediction, only need consider back part loss, front part is 0;
+        # # target_tensor > zeros <=> z=1, so negative coefficient = 0.
+        # neg_p_sub = array_ops.where(target_tensor > zeros, zeros, sigmoid_p)
+        # per_entry_cross_ent = - alpha * (pos_p_sub ** gamma) * tf.log(tf.clip_by_value(sigmoid_p, 1e-8, 1.0)) \
+        #                       - (1 - alpha) * (neg_p_sub ** gamma) * tf.log(tf.clip_by_value(1.0 - sigmoid_p, 1e-8, 1.0))
+
+        # y_true = tf.one_hot(y_true, depth=prediction_tensor.get_shape().as_list()[-1])
+        # cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+        cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+
+
+        # 从logits计算softmax
+        reduce_max = tf.reduce_max(y_pred, axis=1, keepdims=True)
+        y_pred = tf.nn.softmax(y_pred - reduce_max)
+
+        # 计算交叉熵
+        # clip_preb = tf.clip_by_value(y_pred, 1e-10, 1.0)
+        # cross_entropy = -tf.reduce_sum(y_true * tf.log(clip_preb), 1)
+
+        # 计算focal_loss
+        prob = tf.reduce_max(y_pred, axis=1)
+        weight = tf.pow(tf.subtract(1., prob), gamma)
+        fl = tf.multiply(tf.multiply(weight, cross_entropy), alpha)
+        loss = tf.reduce_sum(fl, name=name)
+
+        return loss
+
+    return _focal_loss
+
+
+def multi_category_focal_loss2(gamma=2., alpha=.25):
+    """
+    focal loss for multi category of multi label problem
+    适用于多分类或多标签问题的focal loss
+    alpha控制真值y_true为1/0时的权重
+        1的权重为alpha, 0的权重为1-alpha
+    当你的模型欠拟合，学习存在困难时，可以尝试适用本函数作为loss
+    当模型过于激进(无论何时总是倾向于预测出1),尝试将alpha调小
+    当模型过于惰性(无论何时总是倾向于预测出0,或是某一个固定的常数,说明没有学到有效特征)
+        尝试将alpha调大,鼓励模型进行预测出1。
+    Usage:
+     model.compile(loss=[multi_category_focal_loss2(alpha=0.25, gamma=2)], metrics=["accuracy"], optimizer=adam)
+    """
+    epsilon = 1.e-7
+    gamma = float(gamma)
+    alpha = tf.constant(alpha, dtype=tf.float32)
+
+    def multi_category_focal_loss2_fixed(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        y_pred = tf.clip_by_value(y_pred, epsilon, 1. - epsilon)
+
+        alpha_t = y_true * alpha + (tf.ones_like(y_true) - y_true) * (1 - alpha)
+        y_t = tf.multiply(y_true, y_pred) + tf.multiply(1 - y_true, 1 - y_pred)
+        ce = -tf.log(y_t)
+        weight = tf.pow(tf.subtract(1., y_t), gamma)
+        fl = tf.multiply(tf.multiply(weight, ce), alpha_t)
+        loss = tf.reduce_mean(fl)
+        return loss
+
+    return multi_category_focal_loss2_fixed
 
 
 def prelogits_norm_loss(y_pred, from_logits=False):
@@ -126,12 +250,12 @@ def sequential_model(conv_base, weight_decay, bottleneck_size, n_classes):
 def functional_model(conv_base, input_shape, weight_decay, bottleneck_size, n_classes):
     iminputs = tf.keras.Input(shape=input_shape, name='input')
     model = conv_base(iminputs)
-    model = tf.keras.layers.Dropout(0.5, seed=666)(model)
+    # model = tf.keras.layers.Dropout(0.5, seed=666)(model)
 
     kernel_regularizer = tf.keras.regularizers.l2(weight_decay)
     model = tf.keras.layers.Dense(bottleneck_size, kernel_regularizer=kernel_regularizer)(model)
     prelogits = tf.keras.layers.BatchNormalization(name='Bottleneck')(model)
-    # prelogits = tf.keras.layers.Activation('relu')(prelogits)
+    prelogits = tf.keras.layers.Activation('relu')(prelogits)
 
     kernel_regularizer = tf.keras.regularizers.l2(weight_decay)
     output = tf.keras.layers.Dense(n_classes, kernel_regularizer=kernel_regularizer)(prelogits)
@@ -169,9 +293,9 @@ def custom_model(n_classes, input_shape=(28, 28, 1)):
 
 
 def scheduler(epoch):
-    if epoch < 3:
-        return 0.1
-    elif epoch < 10:
+    # if epoch < 3:
+    #     return 0.1
+    if epoch < 10:
         return 0.05
     elif epoch < 20:
         return 0.005
@@ -310,6 +434,38 @@ class Trainer(object):
         self.params['num_validation_images'] = num_validation_images
         self.params['num_classes'] = num_classes
 
+    def shuffle_data(self, purpose, shuffle=True):
+        '''
+        在自定义训练中，就算设置reshuffle_each_iteration=True，每个epoch迭代完成后数据也并不会reshuffle.
+        :param purpose:
+        :param shuffle:
+        :return:
+        '''
+        if purpose == 'train':
+            filenames = tf.constant(self.datas['train_images_path'])
+            labels = tf.constant(self.datas['train_images_label'])
+            parse_func = self.imparse.train_parse_func
+            buffer_size = min(self.params['num_train_images'], 1000)
+        elif purpose == 'val':
+            filenames = tf.constant(self.datas['validation_images_path'])
+            labels = tf.constant(self.datas['validation_images_label'])
+            parse_func = self.imparse.validation_parse_func
+            buffer_size = min(self.params['num_validation_images'], 1000)
+        else:
+            raise Exception('purpose just support train or val. get: {}'.format(purpose))
+
+        dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+        dataset = dataset.map(parse_func, num_parallel_calls=4)  # tf.data.experimental.AUTOTUNE
+        dataset = dataset.shuffle(buffer_size=buffer_size,
+                                  # seed=tf.compat.v1.set_random_seed(666),
+                                  reshuffle_each_iteration=True
+                                  ).batch(self.params['batch_size'])  # repeat 不指定参数表示允许无穷迭代
+
+        if purpose == 'train':
+            self.train_dataset = dataset.prefetch(buffer_size=buffer_size)
+        elif purpose == 'val':
+            self.validation_dataset = dataset.prefetch(buffer_size=buffer_size)
+
     def set_train_params(self, imshape=(160, 160, 3), batch_size=96, max_epochs=1):
         self.params['max_epochs'] = max_epochs
         self.params['imshape'] = imshape
@@ -324,25 +480,20 @@ class Trainer(object):
         print('train_steps_per_epoch={}'.format(self.params['train_steps_per_epoch']))
         print('validation_steps_per_epoch={}'.format(self.params['validation_steps_per_epoch']))
 
-        imparse = datset.ImageParse(imshape=imshape, n_classes=self.params['num_classes'])
+        self.imparse = datset.ImageParse(imshape=imshape, n_classes=self.params['num_classes'])
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        filenames = tf.constant(self.datas['train_images_path'])
-        labels = tf.constant(self.datas['train_images_label'])
-        train_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-        train_dataset = train_dataset.map(imparse.train_parse_func)
-        self.train_dataset = train_dataset.shuffle(buffer_size=min(self.params['num_train_images'], 1000),
-                                              seed=tf.compat.v1.set_random_seed(666),
-                                              reshuffle_each_iteration=True).batch(batch_size).repeat(1).prefetch(buffer_size=-1)  # repeat 不指定参数表示允许无穷迭代
+        self.shuffle_data('train')
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-        filenames = tf.constant(self.datas['validation_images_path'])
-        labels = tf.constant(self.datas['validation_images_label'])
-        validation_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
-        validation_dataset = validation_dataset.map(imparse.validation_parse_func)
-        self.validation_dataset = validation_dataset.shuffle(buffer_size=min(self.params['num_validation_images'], 1000),
-                                                        seed=tf.compat.v1.set_random_seed(666),
-                                                        reshuffle_each_iteration=True).batch(batch_size).repeat(1).prefetch(buffer_size=-1)
+        self.shuffle_data('val')
+        # filenames = tf.constant(self.datas['validation_images_path'])
+        # labels = tf.constant(self.datas['validation_images_label'])
+        # validation_dataset = tf.data.Dataset.from_tensor_slices((filenames, labels))
+        # validation_dataset = validation_dataset.map(self.imparse.validation_parse_func, num_parallel_calls=tf.data.experimental.AUTOTUNE)
+        # self.validation_dataset = validation_dataset.shuffle(buffer_size=min(self.params['num_validation_images'], 1000),
+        #                                                 seed=tf.compat.v1.set_random_seed(666),
+        #                                                 reshuffle_each_iteration=True).batch(batch_size).repeat(1).prefetch(buffer_size=tf.data.experimental.AUTOTUNE)
         # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
     def set_model(self, conv_base='toy_model', custom_model=False):
@@ -367,7 +518,14 @@ class Trainer(object):
                                           self.params['bottleneck_size'], self.params['num_classes'])  # OK
             # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-        print('create model finish')
+        print(self.model.summary())
+        print('Model trainable variables:')
+        print('{:30s} {:20s} {:20s}'.format('name', 'shape', 'dtype'))
+        print('_________________________________________________________________')
+        for variable in self.model.trainable_variables:
+            print('{:30s} {:20s} {:20s}'.format(variable.name, str(variable.get_shape().as_list()), str(variable.dtype)))
+        print('_________________________________________________________________')
+
 
     def set_record(self):
         self.save_basename = tools.strcat([tools.get_strtime(), self.params['conv_base'], 'n_cls:' + str(self.params['num_classes'])], cat_mark='-')
@@ -390,6 +548,8 @@ class Trainer(object):
         # self.loss_func = tf.keras.losses.CategoricalCrossentropy()
         # self.loss_func = loss.ComplexLoss2()
         self.cross_loss_func = tf.keras.losses.CategoricalCrossentropy()
+        # self.focal_lost_func = multi_category_focal_loss2(alpha=2.0, gamma=0.25)
+        self.focal_lost_func = focal_loss()
         self.prelogits_loss_func = PrelogitsNormLoss()
 
     def set_metric(self):
@@ -397,9 +557,9 @@ class Trainer(object):
         self.metric_func = tf.keras.metrics.CategoricalAccuracy()
 
     def set_optimizer(self):
-        learning_rate = 0.01
+        self.learning_rate = 0.005  # src = 0.001
         # learning_rate = tf.train.exponential_decay(0.01, global_step=self.global_step, decay_steps=2, decay_rate=0.03)
-        self.optimizer = tf.keras.optimizers.Adam(lr=0.001)
+        self.optimizer = tf.keras.optimizers.Adam(lr=self.learning_rate)
         # self.optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate)
 
     def compile(self, optimizer, loss, metrics):
@@ -429,36 +589,67 @@ class Trainer(object):
                             )
 
     def custom_fit(self):
+        """
+        tf.data数据迭代参考：https://blog.csdn.net/qq_34914551/article/details/96834647
+        :return:
+        """
         epoches = 300
+        debug_multi_loss = False
         for epoch in range(epoches):
+            # lr = self.optimizer.learning_rate.assign(scheduler(epoch))
+            # print('Epoch: {}/{}, learning-rate: {}'.format(epoch, epoches, lr.numpy()))
+
             # for metric in self.metrics:
             #     metric.reset_states()
+
+            # step = 0
+            # while True:
+            #     try:
+            #         images, labels = next(train_iter)
+            #     except StopIteration:
+            #         # self.shuffle_data('train')
+            #         break
+            #     if step < 2:
+            #         print(labels.numpy().argmax(axis=1))
+
+            # train_iter = iter(self.train_dataset)
+            # train_iter = tfe.Iterator(self.train_dataset)
+            self.metric_func.reset_states()
             for step, (images, labels) in enumerate(self.train_dataset):
-                # self.global_step.assign_add(1)
-                # labels = tf.one_hot(labels, self.params['num_classes'])
+                if step < 2:
+                    print(labels.numpy().argmax(axis=1))
+
                 with tf.GradientTape() as t:
                     outputs = self.model(images)
                     # if type(outputs) != np.ndarray:
                     #     outputs = outputs.numpy()
                     # labels = labels.reshape((-1, 1))
-                    step_crossloss = self.cross_loss_func(labels, outputs)
-                    step_logitloss = self.prelogits_loss_func(labels, outputs)
-                    step_loss = step_crossloss + step_logitloss
+                    # step_crossloss = self.cross_loss_func(labels, outputs)
+                    step_crossloss = self.focal_lost_func(labels, outputs)
+                    step_loss = step_crossloss
+                    if debug_multi_loss:
+                        step_logitloss = self.prelogits_loss_func(labels, outputs)
+                        step_loss = step_loss + step_logitloss
 
-                grads = t.gradient([step_loss, step_crossloss],
-                                   [self.model.trainable_variables[:-2], self.model.trainable_variables[-2:]])
-                self.optimizer.apply_gradients(zip(grads[0], self.model.trainable_variables[:-2]))
-                self.optimizer.apply_gradients(zip(grads[1], self.model.trainable_variables[-2:]))
-
-                # grads = t.gradient(step_loss, self.model.trainable_variables)
-                # self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+                if debug_multi_loss:
+                    grads = t.gradient([step_loss, step_loss],
+                                       [self.model.trainable_variables[:-2], self.model.trainable_variables[-2:]])
+                    self.optimizer.apply_gradients(zip(grads[0], self.model.trainable_variables[:-2]))
+                    self.optimizer.apply_gradients(zip(grads[1], self.model.trainable_variables[-2:]))
+                else:
+                    grads = t.gradient(step_loss, self.model.trainable_variables)
+                    self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
 
                 rslt = self.metric_func(labels, outputs)
                 # self.metric_func.result()
-                print('Training: global step: {}, crossloss: {}, logitsloss: {}, acc: {}'.format(step,
-                                                                                                 step_crossloss.numpy(),
-                                                                                                 step_logitloss.numpy(),
-                                                                                                 rslt.numpy()))
+                if True or step % 50 == 0:
+                    print('Training: step: {}, epoch: {}, loss: {}, logitsloss: {}, acc: {}'.format(step,
+                                                                                                    epoch,
+                                                                                                    step_loss.numpy(),
+                                                                                                    0,
+                                                                                                    rslt.numpy()))
+
+                # step += 1
 
                 # for metric in self.metrics:
                 #     rslt = metric(labels, outputs, loss_step)
@@ -472,9 +663,42 @@ class Trainer(object):
                 #         print(metric.name(), metric.result().numpy(), end=' ')
                 #     print('')
 
-            if epoch == 2:
-                self.finetune()
+            self.metric_func.reset_states()
+            for step, (images, labels) in enumerate(self.validation_dataset):
+                outputs = self.model(images)
+                # if type(outputs) != np.ndarray:
+                #     outputs = outputs.numpy()
+                # labels = labels.reshape((-1, 1))
+                step_crossloss = self.cross_loss_func(labels, outputs)
+                # step_focalloss = self.focal_lost_func(labels, outputs)
+                step_loss = step_crossloss  # + 0.5*step_focalloss
+                if debug_multi_loss:
+                    step_logitloss = self.prelogits_loss_func(labels, outputs)
+                    step_loss = step_loss + step_logitloss
 
+                rslt = self.metric_func(labels, outputs)
+                # self.metric_func.result()
+                if True or step % 50 == 0:
+                    print('Validation: step: {}, epoch: {}, loss: {}, logitsloss: {}, acc: {}'.format(step,
+                                                                                                    epoch,
+                                                                                                    step_loss.numpy(),
+                                                                                                    0,
+                                                                                                    rslt.numpy()))
+
+
+
+            # if epoch == 20:
+            #     self.finetune(-5)
+            # elif epoch == 50:
+            #     self.finetune(-8)
+            # elif epoch == 60:
+            #     self.finetune(-15)
+            # elif epoch == 100:
+            #     self.finetune(-30)
+            # elif epoch == 150:
+            #     self.finetune(-60)
+            # elif epoch == 200:
+            #     self.finetune(-100)
     def save_model(self):
         # TODO: 临时写法
         try:
@@ -485,11 +709,19 @@ class Trainer(object):
             checkpoint_path = os.path.join(self.model_save_dir, 'ckpt')
             self.model.save_weights(checkpoint_path)
 
-    def finetune(self):
+    def finetune(self, num_layers):
         conv_base_model = self.model.layers[1]
         conv_base_model.trainable = True
-        for layer in conv_base_model.layers[:-4]:
+        for layer in conv_base_model.layers[:num_layers]:
             layer.trainable = False
+
+        print('finetune {} layers!'.format(num_layers))
+        print('\n****************************************************')
+        print('layer.name \t layer.trainable')
+        for l in conv_base_model.layers:
+            print(l.name, '\t', l.trainable)
+        print('****************************************************\n')
+        conv_base_model.summary()
 
 
 if __name__ == '__main__':
@@ -499,7 +731,7 @@ if __name__ == '__main__':
     # trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.1)
     # trainer.set_train_params(imshape=(28, 28, 1), batch_size=96, max_epochs=2)
     trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=276)
-    trainer.set_model('MobileNetV2', custom_model=False)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
+    trainer.set_model('ResNet50', custom_model=False)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
     trainer.set_record()
     if datset.MULTI_OUTPUT:
         trainer.set_loss_metric(losses=[prelogits_norm_loss, 'sparse_categorical_crossentropy'], metrics=[[], 'accuracy'])
@@ -511,7 +743,7 @@ if __name__ == '__main__':
     reporter.add_records(trainer.get_params())
 
     trainer.custom_fit()
-    trainer.finetune()
+    # trainer.finetune()
     trainer.save_model()
     reporter.save_record(os.path.join(trainer.get_logdir(), 'params.txt'))
 
@@ -540,7 +772,14 @@ def dup_sampling_check(info):
     for dat in info:
         if 'VGGFace2' in dat[-1]:
             # 不对VGGFace2数据集进行重复抽样
-            return False
+            if len(info) < 60:
+                print('include VGGFace2: but len(info):{} < 60\n'.format(len(info)))
+                print('************************************************************')
+                print(info)
+                print('************************************************************')
+                return True
+            else:
+                return False
 
         findit = False
         for mark in marks:
@@ -557,13 +796,23 @@ def dup_sampling_check(info):
 
 
 if __name__ == '__main__3':  # 加载facenet训练所需要的数据集
+    # train_dataset = [{'root_path': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44',
+    #                   'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland.csv'},
+    #                  {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning',
+    #                   'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned.csv'},
+    #                  ]
+
     train_dataset = [{'root_path': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44',
-                      'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland.csv'},
+                      'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland_HongkongTaiwan.csv'},
+
                      {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning',
-                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned.csv'},
+                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned-while_include_HkTw.csv'},
+
+                     {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_HongkongTaiwan_cleaning',
+                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_HongkongTaiwan_cleaned.csv'},
                      ]
 
-    # datset.make_feedata(train_dataset, 'tmp2.csv', title_line='train_val,label,person_name,image_path\n', filter_cb=dup_sampling_check)
-    datset.load_feedata('tmp2.csv')
+    datset.make_feedata(train_dataset, 'tmp2.csv', title_line='train_val,label,person_name,image_path\n', filter_cb=dup_sampling_check)
+    # datset.load_feedata('tmp2.csv')
 
 
