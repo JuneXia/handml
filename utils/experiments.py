@@ -72,3 +72,9 @@ if __name__ == '__main__2':  # tf1.x的tf.data在每个epoch后不会自动reshu
                 break
             step += 1
 
+
+if __name__ == '__main__':  # 范数实验
+    arr = np.array([[0,1,2],
+                   [2,0,3]], dtype=np.float32)
+    a = tf.norm(arr)
+    a = tf.nn.l2_normalize(arr, axis=1)

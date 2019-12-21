@@ -14,6 +14,7 @@ from tensorflow.python.keras import losses
 from utils import dataset as datset
 from utils import tools
 import numpy as np
+import math
 from six import iteritems
 
 from losses import loss
@@ -29,9 +30,10 @@ host_name = socket.gethostname()
 if user_name in ['xiajun', 'yp']:
     g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
 elif user_name in ['xiaj'] and host_name in ['ailab-server']:
-    os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+    os.environ['CUDA_VISIBLE_DEVICES'] = '3'
     # g_datapath = os.path.join(home_path, 'res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44')
-    g_datapath = '/disk2/res/VGGFace2/Experiment/mtcnn_align182x182_margin44'
+    # g_datapath = '/disk2/res/VGGFace2/Experiment/mtcnn_align182x182_margin44'
+    g_datapath = os.path.join(home_path, 'res/mnist/train')
 elif user_name in ['xiaj'] and host_name in ['ubuntu-pc']:
     g_datapath = os.path.join(home_path, 'res/mnist')
 else:
@@ -113,7 +115,7 @@ def focal_loss(weights=None, alpha=0.25, gamma=2, name='focal_loss'):
         return loss
 
 
-    def _focal_loss(y_true, y_pred):
+    def _focal_loss2(y_true, y_pred):
         # sigmoid_p = tf.nn.sigmoid(prediction_tensor)
         # zeros = array_ops.zeros_like(sigmoid_p, dtype=sigmoid_p.dtype)
         #
@@ -145,6 +147,28 @@ def focal_loss(weights=None, alpha=0.25, gamma=2, name='focal_loss'):
         # 计算focal_loss
         prob = tf.reduce_max(y_pred, axis=1)
         weight = tf.pow(tf.subtract(1., prob), gamma)
+        fl = tf.multiply(tf.multiply(weight, cross_entropy), alpha)
+        loss = tf.reduce_sum(fl, name=name)
+
+        return loss
+
+    def _focal_loss(y_true, y_pred):
+        # 从logits计算softmax
+        reduce_max = tf.reduce_max(y_pred, axis=1, keepdims=True)
+        y_pred = tf.nn.softmax(tf.subtract(y_pred, reduce_max))
+
+        # cross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=y_true, logits=y_pred)
+
+        y_pred = tf.clip_by_value(y_pred, 1e-10, 1.0)
+        # cross_entropy = -tf.reduce_sum(y_true * tf.log(y_pred), 1)
+        cross_entropy = -tf.reduce_sum(tf.multiply(y_true, tf.log(y_pred)), axis=1)
+
+        # 计算focal_loss
+        prob = tf.reduce_max(y_pred, axis=1)
+        weight = tf.pow(tf.subtract(1., prob), gamma)
+        # weight = tf.multiply(tf.multiply(weight, y_true), alpha)
+        # weight = tf.reduce_max(weight, axis=1)
+
         fl = tf.multiply(tf.multiply(weight, cross_entropy), alpha)
         loss = tf.reduce_sum(fl, name=name)
 
@@ -185,6 +209,516 @@ def multi_category_focal_loss2(gamma=2., alpha=.25):
     return multi_category_focal_loss2_fixed
 
 
+def cosineface_losses(embedding, labels, out_num, w_init=None, s=30., m=0.4):
+    '''
+    :param embedding: the input embedding vectors
+    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
+    :param s: scalar value, default is 30
+    :param out_num: output class num
+    :param m: the margin value, default is 0.4
+    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
+    '''
+    with tf.variable_scope('cosineface_loss'):
+        # inputs and weights norm
+        embedding_norm = tf.norm(embedding, axis=1, keep_dims=True)
+        embedding = tf.div(embedding, embedding_norm, name='norm_embedding')
+        weights = tf.get_variable(name='embedding_weights', shape=(embedding.get_shape().as_list()[-1], out_num),
+                                  initializer=w_init, dtype=tf.float32)
+        weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+        weights = tf.div(weights, weights_norm, name='norm_weights')
+        # cos_theta - m
+        cos_t = tf.matmul(embedding, weights, name='cos_t')
+        cos_t_m = tf.subtract(cos_t, m, name='cos_t_m')
+
+        mask = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+        inv_mask = tf.subtract(1., mask, name='inverse_mask')
+
+        output = tf.add(s * tf.multiply(cos_t, inv_mask), s * tf.multiply(cos_t_m, mask), name='cosineface_loss_output')
+    return output
+
+
+def center_loss2(normalized_pred, logits_w, label, alfa, nrof_classes):
+    """Center loss based on the paper "A Discriminative Feature Learning Approach for Deep Face Recognition"
+       (http://ydwen.github.io/papers/WenECCV16.pdf)
+    """
+    # nrof_features = normalized_pred.get_shape()[1]
+    # centers = tf.get_variable('centers', [nrof_classes, 5], dtype=tf.float32, initializer=tf.constant_initializer(0), trainable=False)
+
+    logits_w = tf.nn.l2_normalize(logits_w, 0, 1e-10)
+    centers = tf.transpose(logits_w)
+    label = tf.reshape(label, [-1])
+    centers_batch = tf.gather(centers, label)
+    diff = (1 - alfa) * (centers_batch - normalized_pred)
+    centers = tf.scatter_sub(centers, label, diff)
+    with tf.control_dependencies([centers]):
+        loss = tf.reduce_mean(tf.square(normalized_pred - centers_batch))
+    return loss, centers
+
+""
+def arcface_loss1(embedding, labels, out_num, w_init=None, s=64., m=0.5, name='arc_loss'):
+    '''
+    Reference: https://github.com/auroua/InsightFace_TF/losses/face_losses.py
+    :param embedding: the input embedding vectors
+    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
+    :param s: scalar value default is 64
+    :param out_num: output class num
+    :param m: the margin value, default is 0.5
+    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
+    '''
+    cos_m = math.cos(m)
+    sin_m = math.sin(m)
+    mm = sin_m * m  # issue 1
+    threshold = math.cos(math.pi - m)
+    with tf.variable_scope('Logits', reuse=True):
+        # inputs and weights norm
+        embedding_norm = tf.norm(embedding, axis=1, keep_dims=True)
+        embedding = tf.div(embedding, embedding_norm, name='norm_embedding')
+        weights = tf.get_variable(name='weights', shape=(embedding.get_shape().as_list()[-1], out_num),
+                                  initializer=w_init, dtype=tf.float32)
+        weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+        weights = tf.div(weights, weights_norm, name='norm_weights')
+        # cos(theta+m)
+        cos_t = tf.matmul(embedding, weights, name='cos_t')
+        cos_t2 = tf.square(cos_t, name='cos_2')
+        sin_t2 = tf.subtract(1., cos_t2, name='sin_2')
+        sin_t = tf.sqrt(sin_t2, name='sin_t')
+        cos_mt = s * tf.subtract(tf.multiply(cos_t, cos_m), tf.multiply(sin_t, sin_m), name='cos_mt')
+
+        # this condition controls the theta+m should in range [0, pi]
+        #      0<=theta+m<=pi
+        #     -m<=theta<=pi-m
+        cond_v = cos_t - threshold
+        cond = tf.cast(tf.nn.relu(cond_v, name='if_else'), dtype=tf.bool)
+
+        keep_val = s*(cos_t - mm)
+        cos_mt_temp = tf.where(cond, cos_mt, keep_val)
+
+        mask = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+        # mask = labels
+        # mask = tf.squeeze(mask, 1)
+        inv_mask = tf.subtract(1., mask, name='inverse_mask')
+
+        s_cos_t = tf.multiply(s, cos_t, name='scalar_cos_t')
+
+        output = tf.add(tf.multiply(s_cos_t, inv_mask), tf.multiply(cos_mt_temp, mask), name='arcface_loss_output')
+
+    ross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=output)
+    loss = tf.reduce_mean(ross_entropy, name=name)
+    return loss
+""
+
+def arcface_loss(embedding, labels, out_num, w_init=None, s=64., m=0.5, name='arc_loss'):
+    '''
+    Reference: https://github.com/auroua/InsightFace_TF/losses/face_losses.py
+    :param embedding: the input embedding vectors
+    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
+    :param s: scalar value default is 64
+    :param out_num: output class num
+    :param m: the margin value, default is 0.5
+    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
+    '''
+    shape_list = labels.shape.as_list()
+    if len(shape_list) == 2 and shape_list[-1] > 1:
+        onehot = True
+    else:
+        onehot = False
+
+    with tf.variable_scope('Logits', reuse=True):
+        weights = tf.get_variable(name='weights', shape=(embedding.get_shape().as_list()[-1], out_num),
+                                  initializer=w_init, dtype=tf.float32)
+
+    # embedding = tf.nn.l2_normalize(embedding, 0, 1e-10)
+    weights = tf.nn.l2_normalize(weights, 0, 1e-10)
+
+    # cos(theta+m)
+    fc7 = tf.matmul(embedding, weights, name='cos_t')  # cos_t
+
+    if onehot:
+        labs = tf.reshape(tf.argmax(labels, axis=1), (-1, 1))
+    else:
+        labs = tf.reshape(labels, (-1, 1))
+    zy = tf.gather_nd(fc7, labs, batch_dims=1)  # cos_t_flatten
+
+    # theta = tf.acos(0.707106781)*180/np.pi  == 45
+    theta = tf.acos(zy)
+    zy_margin = tf.cos(theta + m)
+
+    if not onehot:
+        onehot_labels = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+    else:
+        onehot_labels = labels
+    diff = zy_margin - zy
+    diff = tf.expand_dims(diff, 1)
+    fc7 = fc7 + tf.multiply(onehot_labels, diff)
+    output = fc7 * s
+
+    ross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=output)
+    loss = tf.reduce_mean(ross_entropy, name=name)
+    return loss
+
+
+def arcface_loss_仿照csdnMX版本编写(embedding, labels, out_num, w_init=None, s=64., m=0.5, name='arc_loss'):
+    '''
+    Reference: https://github.com/auroua/InsightFace_TF/losses/face_losses.py
+    :param embedding: the input embedding vectors
+    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
+    :param s: scalar value default is 64
+    :param out_num: output class num
+    :param m: the margin value, default is 0.5
+    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
+    '''
+    cos_m = math.cos(m)
+    sin_m = math.sin(m)
+    mm = sin_m * m  # issue 1
+    threshold = math.cos(math.pi - m)
+    with tf.variable_scope('Logits', reuse=True):
+        # inputs and weights norm
+
+        # embedding normalize
+        # embedding_norm = tf.norm(embedding, axis=1, keep_dims=True)
+        # embedding = tf.div(embedding, embedding_norm, name='norm_embedding')
+
+        embedding = tf.nn.l2_normalize(embedding, 0, 1e-10) * s
+
+        # 定义weight, 并normalize
+        weights = tf.get_variable(name='weights', shape=(embedding.get_shape().as_list()[-1], out_num),
+                                  initializer=w_init, dtype=tf.float32)
+        # weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+        # weights = tf.div(weights, weights_norm, name='norm_weights')
+
+        weights = tf.nn.l2_normalize(weights, 0, 1e-10)
+
+        # cos(theta+m)
+        fc7 = tf.matmul(embedding, weights, name='cos_t')  # cos_t
+
+        ONE_HOT = False
+        if ONE_HOT:
+            labs = tf.reshape(tf.argmax(labels, axis=1), (-1, 1))
+        else:
+            labs = tf.reshape(labels, (-1, 1))
+        zy = tf.gather_nd(fc7, labs, batch_dims=1)  # cos_t_flatten
+
+        cos_t = zy/s
+
+        # this condition controls the theta+m should in range [0, pi]
+        #      0<=theta+m<=pi
+        #     -m<=theta<=pi-m
+        cond_v = cos_t - threshold
+        cond = tf.cast(tf.nn.relu(cond_v, name='if_else'), dtype=tf.bool)
+
+        cos_t2 = tf.square(cos_t, name='cos_2')
+        sin_t2 = tf.subtract(1., cos_t2, name='sin_2')
+        sin_t = tf.sqrt(sin_t2, name='sin_t')
+        new_zy = s * tf.subtract(tf.multiply(cos_t, cos_m), tf.multiply(sin_t, sin_m), name='cos_mt')
+
+        zy_keep = zy - s*mm
+        new_zy = tf.where(cond, new_zy, zy_keep)
+
+        diff = new_zy - zy
+        diff = tf.expand_dims(diff, 1)
+        onehot_labels = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+        body = tf.multiply(onehot_labels, diff)
+        output = fc7 + body
+
+
+
+        # keep_val = s*(cos_t_flatten - mm)
+        # cos_mt_temp = tf.where(cond, cos_mt, keep_val)
+        #
+        # diff = cos_mt_temp - s * cos_t_flatten
+        # diff = tf.expand_dims(diff, axis=1)
+        # # onehot_labels = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+        # diff = tf.reshape(diff, (-1, 1))
+        # body = tf.multiply(labels, diff)
+        #
+        # output = body + cos_t * s
+
+    ross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels, logits=output)
+    loss = tf.reduce_mean(ross_entropy, name=name)
+    return loss
+
+
+def arcface_loss_待调试(embedding, labels, out_num, w_init=None, s=64., m=0.5, name='arc_loss'):
+    '''
+    Reference: https://github.com/auroua/InsightFace_TF/losses/face_losses.py
+    :param embedding: the input embedding vectors
+    :param labels:  the input labels, the shape should be eg: (batch_size, 1)
+    :param s: scalar value default is 64
+    :param out_num: output class num
+    :param m: the margin value, default is 0.5
+    :return: the final cacualted output, this output is send into the tf.nn.softmax directly
+    '''
+    cos_m = math.cos(m)
+    sin_m = math.sin(m)
+    mm = sin_m * m  # issue 1
+    threshold = math.cos(math.pi - m)
+    with tf.variable_scope('Logits', reuse=True):
+        # inputs and weights norm
+        embedding_norm = tf.norm(embedding, axis=1, keep_dims=True)
+        embedding = tf.div(embedding, embedding_norm, name='norm_embedding')
+        weights = tf.get_variable(name='weights', shape=(embedding.get_shape().as_list()[-1], out_num),
+                                  initializer=w_init, dtype=tf.float32)
+        weights_norm = tf.norm(weights, axis=0, keep_dims=True)
+        weights = tf.div(weights, weights_norm, name='norm_weights')
+        # cos(theta+m)
+        cos_t = tf.matmul(embedding, weights, name='cos_t')
+
+        labs = tf.reshape(tf.argmax(labels, axis=1), (-1, 1))
+        cos_t_flatten = tf.gather_nd(cos_t, labs, batch_dims=1)
+
+        cos_t2 = tf.square(cos_t_flatten, name='cos_2')
+        sin_t2 = tf.subtract(1., cos_t2, name='sin_2')
+        sin_t = tf.sqrt(sin_t2, name='sin_t')
+        cos_mt = s * tf.subtract(tf.multiply(cos_t_flatten, cos_m), tf.multiply(sin_t, sin_m), name='cos_mt')
+
+        # this condition controls the theta+m should in range [0, pi]
+        #      0<=theta+m<=pi
+        #     -m<=theta<=pi-m
+        cond_v = cos_t_flatten - threshold
+        cond = tf.cast(tf.nn.relu(cond_v, name='if_else'), dtype=tf.bool)
+
+        keep_val = s*(cos_t_flatten - mm)
+        cos_mt_temp = tf.where(cond, cos_mt, keep_val)
+
+        diff = cos_mt_temp - s * cos_t_flatten
+        diff = tf.expand_dims(diff, axis=1)
+        # onehot_labels = tf.one_hot(labels, depth=out_num, name='one_hot_mask')
+        diff = tf.reshape(diff, (-1, 1))
+        body = tf.multiply(labels, diff)
+
+        output = body + cos_t * s
+
+    ross_entropy = tf.nn.softmax_cross_entropy_with_logits(labels=labels, logits=output)
+    loss = tf.reduce_mean(ross_entropy, name=name)
+    return loss
+
+
+
+def _pairwise_distances(embeddings, squared=False):
+    """Compute the 2D matrix of distances between all the embeddings.
+
+    Args:
+        embeddings: tensor of shape (batch_size, embed_dim)
+        squared: Boolean. If true, output is the pairwise squared euclidean distance matrix.
+                 If false, output is the pairwise euclidean distance matrix.
+
+    Returns:
+        pairwise_distances: tensor of shape (batch_size, batch_size)
+    """
+    # Get the dot product between all embeddings
+    # shape (batch_size, batch_size)
+    dot_product = tf.matmul(embeddings, tf.transpose(embeddings))
+
+    # Get squared L2 norm for each embedding. We can just take the diagonal of `dot_product`.
+    # This also provides more numerical stability (the diagonal of the result will be exactly 0).
+    # shape (batch_size,)
+    square_norm = tf.diag_part(dot_product)
+
+    # Compute the pairwise distance matrix as we have:
+    # ||a - b||^2 = ||a||^2  - 2 <a, b> + ||b||^2
+    # shape (batch_size, batch_size)
+    distances = tf.expand_dims(square_norm, 1) - 2.0 * dot_product + tf.expand_dims(square_norm, 0)
+
+    # Because of computation errors, some distances might be negative so we put everything >= 0.0
+    distances = tf.maximum(distances, 0.0)
+
+    if not squared:
+        # Because the gradient of sqrt is infinite when distances == 0.0 (ex: on the diagonal)
+        # we need to add a small epsilon where distances == 0.0
+        mask = tf.to_float(tf.equal(distances, 0.0))
+        distances = distances + mask * 1e-16
+
+        distances = tf.sqrt(distances)
+
+        # Correct the epsilon added: set the distances on the mask to be exactly 0.0
+        distances = distances * (1.0 - mask)
+
+    return distances
+
+
+def _get_anchor_positive_triplet_mask(labels):
+    """Return a 2D mask where mask[a, p] is True iff a and p are distinct and have same label.
+
+    Args:
+        labels: tf.int32 `Tensor` with shape [batch_size]
+
+    Returns:
+        mask: tf.bool `Tensor` with shape [batch_size, batch_size]
+    """
+    # Check that i and j are distinct
+    indices_equal = tf.cast(tf.eye(tf.shape(labels)[0]), tf.bool)
+    indices_not_equal = tf.logical_not(indices_equal)
+
+    # Check if labels[i] == labels[j]
+    # Uses broadcasting where the 1st argument has shape (1, batch_size) and the 2nd (batch_size, 1)
+    labels_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+
+    # Combine the two masks
+    mask = tf.logical_and(indices_not_equal, labels_equal)
+
+    return mask
+
+
+def _get_anchor_negative_triplet_mask(labels):
+    """Return a 2D mask where mask[a, n] is True iff a and n have distinct labels.
+
+    Args:
+        labels: tf.int32 `Tensor` with shape [batch_size]
+
+    Returns:
+        mask: tf.bool `Tensor` with shape [batch_size, batch_size]
+    """
+    # Check if labels[i] != labels[k]
+    # Uses broadcasting where the 1st argument has shape (1, batch_size) and the 2nd (batch_size, 1)
+    labels_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+
+    mask = tf.logical_not(labels_equal)
+
+    return mask
+
+
+def _get_triplet_mask(labels):
+    """Return a 3D mask where mask[a, p, n] is True iff the triplet (a, p, n) is valid.
+
+    A triplet (i, j, k) is valid if:
+        - i, j, k are distinct
+        - labels[i] == labels[j] and labels[i] != labels[k]
+
+    Args:
+        labels: tf.int32 `Tensor` with shape [batch_size]
+    """
+    # Check that i, j and k are distinct
+    indices_equal = tf.cast(tf.eye(tf.shape(labels)[0]), tf.bool)
+    indices_not_equal = tf.logical_not(indices_equal)
+    i_not_equal_j = tf.expand_dims(indices_not_equal, 2)
+    i_not_equal_k = tf.expand_dims(indices_not_equal, 1)
+    j_not_equal_k = tf.expand_dims(indices_not_equal, 0)
+
+    distinct_indices = tf.logical_and(tf.logical_and(i_not_equal_j, i_not_equal_k), j_not_equal_k)
+
+
+    # Check if labels[i] == labels[j] and labels[i] != labels[k]
+    label_equal = tf.equal(tf.expand_dims(labels, 0), tf.expand_dims(labels, 1))
+    i_equal_j = tf.expand_dims(label_equal, 2)
+    i_equal_k = tf.expand_dims(label_equal, 1)
+
+    valid_labels = tf.logical_and(i_equal_j, tf.logical_not(i_equal_k))
+
+    # Combine the two masks
+    mask = tf.logical_and(distinct_indices, valid_labels)
+
+    return mask
+
+
+def batch_all_triplet_loss(labels, embeddings, margin, squared=False):
+    """Build the triplet loss over a batch of embeddings.
+
+    We generate all the valid triplets and average the loss over the positive ones.
+
+    Args:
+        labels: labels of the batch, of size (batch_size,)
+        embeddings: tensor of shape (batch_size, embed_dim)
+        margin: margin for triplet loss
+        squared: Boolean. If true, output is the pairwise squared euclidean distance matrix.
+                 If false, output is the pairwise euclidean distance matrix.
+
+    Returns:
+        triplet_loss: scalar tensor containing the triplet loss
+    """
+    # Get the pairwise distance matrix
+    pairwise_dist = _pairwise_distances(embeddings, squared=squared)
+
+    # shape (batch_size, batch_size, 1)
+    anchor_positive_dist = tf.expand_dims(pairwise_dist, 2)
+    assert anchor_positive_dist.shape[2] == 1, "{}".format(anchor_positive_dist.shape)
+    # shape (batch_size, 1, batch_size)
+    anchor_negative_dist = tf.expand_dims(pairwise_dist, 1)
+    assert anchor_negative_dist.shape[1] == 1, "{}".format(anchor_negative_dist.shape)
+
+    # Compute a 3D tensor of size (batch_size, batch_size, batch_size)
+    # triplet_loss[i, j, k] will contain the triplet loss of anchor=i, positive=j, negative=k
+    # Uses broadcasting where the 1st argument has shape (batch_size, batch_size, 1)
+    # and the 2nd (batch_size, 1, batch_size)
+    triplet_loss = anchor_positive_dist - anchor_negative_dist + margin
+
+    # Put to zero the invalid triplets
+    # (where label(a) != label(p) or label(n) == label(a) or a == p)
+    mask = _get_triplet_mask(labels)
+    mask = tf.to_float(mask)
+    triplet_loss = tf.multiply(mask, triplet_loss)
+
+    # Remove negative losses (i.e. the easy triplets)
+    triplet_loss = tf.maximum(triplet_loss, 0.0)
+
+    # Count number of positive triplets (where triplet_loss > 0)
+    valid_triplets = tf.to_float(tf.greater(triplet_loss, 1e-16))
+    num_positive_triplets = tf.reduce_sum(valid_triplets)
+    num_valid_triplets = tf.reduce_sum(mask)
+    fraction_positive_triplets = num_positive_triplets / (num_valid_triplets + 1e-16)
+
+    # Get final mean triplet loss over the positive valid triplets
+    triplet_loss = tf.reduce_sum(triplet_loss) / (num_positive_triplets + 1e-16)
+
+    return triplet_loss, fraction_positive_triplets
+
+
+def batch_hard_triplet_loss(labels, embeddings, margin, squared=False):
+    """Build the triplet loss over a batch of embeddings.
+
+    For each anchor, we get the hardest positive and hardest negative to form a triplet.
+
+    Args:
+        labels: labels of the batch, of size (batch_size,)
+        embeddings: tensor of shape (batch_size, embed_dim)
+        margin: margin for triplet loss
+        squared: Boolean. If true, output is the pairwise squared euclidean distance matrix.
+                 If false, output is the pairwise euclidean distance matrix.
+
+    Returns:
+        triplet_loss: scalar tensor containing the triplet loss
+    """
+    # Get the pairwise distance matrix
+    pairwise_dist = _pairwise_distances(embeddings, squared=squared)
+
+    # For each anchor, get the hardest positive
+    # First, we need to get a mask for every valid positive (they should have same label)
+    mask_anchor_positive = _get_anchor_positive_triplet_mask(labels)
+    mask_anchor_positive = tf.to_float(mask_anchor_positive)
+
+    # We put to 0 any element where (a, p) is not valid (valid if a != p and label(a) == label(p))
+    anchor_positive_dist = tf.multiply(mask_anchor_positive, pairwise_dist)
+
+    # shape (batch_size, 1)
+    hardest_positive_dist = tf.reduce_max(anchor_positive_dist, axis=1, keepdims=True)
+    tf.summary.scalar("hardest_positive_dist", tf.reduce_mean(hardest_positive_dist))
+
+    # For each anchor, get the hardest negative
+    # First, we need to get a mask for every valid negative (they should have different labels)
+    mask_anchor_negative = _get_anchor_negative_triplet_mask(labels)
+    mask_anchor_negative = tf.to_float(mask_anchor_negative)
+
+    # We add the maximum value in each row to the invalid negatives (label(a) == label(n))
+    max_anchor_negative_dist = tf.reduce_max(pairwise_dist, axis=1, keepdims=True)
+    anchor_negative_dist = pairwise_dist + max_anchor_negative_dist * (1.0 - mask_anchor_negative)
+
+    # shape (batch_size,)
+    hardest_negative_dist = tf.reduce_min(anchor_negative_dist, axis=1, keepdims=True)
+    tf.summary.scalar("hardest_negative_dist", tf.reduce_mean(hardest_negative_dist))
+
+    # Combine biggest d(a, p) and smallest d(a, n) into final triplet loss
+    triplet_loss = tf.maximum(hardest_positive_dist - hardest_negative_dist + margin, 0.0)
+
+    # Get final mean triplet loss
+    triplet_loss = tf.reduce_mean(triplet_loss)
+
+    return triplet_loss
+
+
+# embedding = np.ones((3, 5), dtype=np.float32)
+# labels = np.array([1, 0, 2])
+# arcface_loss(embedding, labels=labels, out_num=10)
+
+
 def prelogits_norm_loss(y_pred, from_logits=False):
     eps = 1e-4
     prelogits_norm_p = 1
@@ -221,7 +755,6 @@ class CustomModel(tf.keras.Model):
         output = self.conv_base(inputs)
         output = self.dropout(output)
         output = self.dense_bottleneck(output)
-        output = self.prelogits(output)
         prelogits = self.prelogits(output)
         output = self.dense2(prelogits)
 
@@ -259,7 +792,7 @@ def functional_model(conv_base, input_shape, weight_decay, bottleneck_size, n_cl
 
     kernel_regularizer = tf.keras.regularizers.l2(weight_decay)
     output = tf.keras.layers.Dense(n_classes, kernel_regularizer=kernel_regularizer)(prelogits)
-    output = tf.keras.layers.Activation('softmax')(output)
+    # output = tf.keras.layers.Activation('softmax')(output)
 
     if datset.MULTI_OUTPUT:
         model = tf.keras.Model(inputs=iminputs, outputs=[prelogits, output])
@@ -548,8 +1081,8 @@ class Trainer(object):
         # self.loss_func = tf.keras.losses.CategoricalCrossentropy()
         # self.loss_func = loss.ComplexLoss2()
         self.cross_loss_func = tf.keras.losses.CategoricalCrossentropy()
-        # self.focal_lost_func = multi_category_focal_loss2(alpha=2.0, gamma=0.25)
-        self.focal_lost_func = focal_loss()
+        # self.focal_loss_func = multi_category_focal_loss2(alpha=2.0, gamma=0.25)
+        self.focal_loss_func = focal_loss()
         self.prelogits_loss_func = PrelogitsNormLoss()
 
     def set_metric(self):
@@ -621,11 +1154,38 @@ class Trainer(object):
 
                 with tf.GradientTape() as t:
                     outputs = self.model(images)
+
+                    # debug
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+                    if False:
+                        batch_size = 3
+                        self.params['num_classes'] = 7
+                        emb_size = 5
+                        embedding = np.ones((batch_size, emb_size), dtype=np.float32)
+                        embedding[:, 1::2] = 0
+                        labels = np.arange(self.params['num_classes'])
+                        np.random.shuffle(labels)
+                        # labels = labels[0:batch_size]
+                        labels = np.array([6, 0, 3], dtype=np.int32)
+                    else:
+                        embedding = outputs[0]
+                        labels = tf.argmax(labels, axis=1)
+
+
+
+                    # arcloss1 = arcface_loss1(embedding, labels, self.params['num_classes'], w_init=tf.ones_initializer)
+                    arcloss = arcface_loss(embedding, labels, self.params['num_classes'], w_init=tf.ones_initializer)
+                    # crossloss = self.focal_loss_func(labels, outputs[1])
+                    triplet_loss, fraction_positive_triplets = batch_all_triplet_loss(labels, embedding, 0.5, squared=False)
+                    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+
+
                     # if type(outputs) != np.ndarray:
                     #     outputs = outputs.numpy()
                     # labels = labels.reshape((-1, 1))
-                    # step_crossloss = self.cross_loss_func(labels, outputs)
-                    step_crossloss = self.focal_lost_func(labels, outputs)
+                    step_crossloss = self.cross_loss_func(labels, outputs)
+                    # step_crossloss = self.focal_loss_func(labels, outputs)
                     step_loss = step_crossloss
                     if debug_multi_loss:
                         step_logitloss = self.prelogits_loss_func(labels, outputs)
@@ -670,7 +1230,7 @@ class Trainer(object):
                 #     outputs = outputs.numpy()
                 # labels = labels.reshape((-1, 1))
                 step_crossloss = self.cross_loss_func(labels, outputs)
-                # step_focalloss = self.focal_lost_func(labels, outputs)
+                # step_focalloss = self.focal_loss_func(labels, outputs)
                 step_loss = step_crossloss  # + 0.5*step_focalloss
                 if debug_multi_loss:
                     step_logitloss = self.prelogits_loss_func(labels, outputs)
@@ -724,14 +1284,14 @@ class Trainer(object):
         conv_base_model.summary()
 
 
-if __name__ == '__main__':
+if __name__ == '__main__1':
     reporter = Reporter()
     trainer = Trainer()
     trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.02)
     # trainer.load_dataset(g_datapath, min_nrof_cls=10, max_nrof_cls=4000, validation_ratio=0.1)
-    # trainer.set_train_params(imshape=(28, 28, 1), batch_size=96, max_epochs=2)
-    trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=276)
-    trainer.set_model('ResNet50', custom_model=False)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
+    trainer.set_train_params(imshape=(28, 28, 3), batch_size=96, max_epochs=2)
+    # trainer.set_train_params(imshape=(160, 160, 3), batch_size=96, max_epochs=276)
+    trainer.set_model(custom_model=True)  # InceptionResnetV2, MobileNetV2, Xception, ResNet50
     trainer.set_record()
     if datset.MULTI_OUTPUT:
         trainer.set_loss_metric(losses=[prelogits_norm_loss, 'sparse_categorical_crossentropy'], metrics=[[], 'accuracy'])
@@ -761,58 +1321,5 @@ if __name__ == '__main__2':
     f = lambda x, y, z: func(x, y)+z
     a = f(1, 2, 3)
     print(a)
-
-
-def dup_sampling_check(info):
-    if len(info) > 200:
-        return False
-
-    marks = ['happyjuzi_mainland', 'happyjuzi_HongkongTaiwan']
-    # samples_info = []
-    for dat in info:
-        if 'VGGFace2' in dat[-1]:
-            # 不对VGGFace2数据集进行重复抽样
-            if len(info) < 60:
-                print('include VGGFace2: but len(info):{} < 60\n'.format(len(info)))
-                print('************************************************************')
-                print(info)
-                print('************************************************************')
-                return True
-            else:
-                return False
-
-        findit = False
-        for mark in marks:
-            if mark in dat[-1]:
-                findit = True
-                # samples_info.append(dat)
-                break
-        if not findit:
-            raise Exception('Only support dataset: {}'.format(marks))
-
-    # samples_info = np.array(samples_info)
-    # return samples_info
-    return True
-
-
-if __name__ == '__main__3':  # 加载facenet训练所需要的数据集
-    # train_dataset = [{'root_path': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44',
-    #                   'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland.csv'},
-    #                  {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning',
-    #                   'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned.csv'},
-    #                  ]
-
-    train_dataset = [{'root_path': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/mtcnn_align182x182_margin44',
-                      'csv_file': '/disk1/home/xiaj/res/face/VGGFace2/Experiment/VGGFace2_cleaned_with_happyjuzi_mainland_HongkongTaiwan.csv'},
-
-                     {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_mainland_cleaning',
-                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_mainland_cleaned-while_include_HkTw.csv'},
-
-                     {'root_path': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/mtcnn_align182x182_margin44_happyjuzi_HongkongTaiwan_cleaning',
-                      'csv_file': '/disk1/home/xiaj/res/face/GC-WebFace/Experiment/happyjuzi_HongkongTaiwan_cleaned.csv'},
-                     ]
-
-    datset.make_feedata(train_dataset, 'tmp2.csv', title_line='train_val,label,person_name,image_path\n', filter_cb=dup_sampling_check)
-    # datset.load_feedata('tmp2.csv')
 
 
