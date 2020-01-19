@@ -30,10 +30,10 @@ if __name__ == '__main__1':  # 类的继承实验
     print('debug')
 
 
-if __name__ == '__main__2':  # tf1.x的tf.data在每个epoch后不会自动reshuffle.
+if __name__ == '__main__':  # tf1.x的tf.data在每个epoch后不会自动reshuffle.
     import os
 
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '0'
 
     import tensorflow as tf
     from tensorflow import keras
@@ -50,7 +50,7 @@ if __name__ == '__main__2':  # tf1.x的tf.data在每个epoch后不会自动reshu
     print(x.shape, y.shape)
 
     train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
-    train_dataset = train_dataset.shuffle(1000, reshuffle_each_iteration=True).batch(100)
+    train_dataset = train_dataset.shuffle(1000, seed=tf.set_random_seed(666), reshuffle_each_iteration=True).batch(100)
     epoch_size = 5
     for epoch in range(epoch_size):
         print('\nEpoch {}/{}:'.format(epoch, epoch_size))
@@ -58,6 +58,9 @@ if __name__ == '__main__2':  # tf1.x的tf.data在每个epoch后不会自动reshu
         for step, (images, labels) in enumerate(train_dataset):
             if step < 2:
                 print(labels.numpy())
+
+        # train_dataset = tf.data.Dataset.from_tensor_slices((x, y))
+        # train_dataset = train_dataset.shuffle(1000, seed=tf.set_random_seed(666), reshuffle_each_iteration=True).batch(100)
 
         continue
 
@@ -73,7 +76,7 @@ if __name__ == '__main__2':  # tf1.x的tf.data在每个epoch后不会自动reshu
             step += 1
 
 
-if __name__ == '__main__':  # 范数实验
+if __name__ == '__main__xxx':  # 范数实验
     arr = np.array([[0,1,2],
                    [2,0,3]], dtype=np.float32)
     a = tf.norm(arr)
